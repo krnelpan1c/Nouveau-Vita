@@ -142,6 +142,49 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
         // Apps installed since the layout was last saved aren't referenced anywhere in it —
         // append them to the first free slot instead of letting them silently disappear.
+        placeNewlyInstalledApps(apps)
+    }
+
+    /** Re-queries the package manager and reconciles the grid against whatever's actually
+     * installed right now: slots (and folder entries) for apps uninstalled since the last check
+     * are cleared out — a folder emptied by this is pruned exactly like [pruneFolderIfEmpty] does
+     * for a manual removal — and any newly installed app is appended to the home screen. Called
+     * from [MainActivity.onResume], since returning from the system "app info"/uninstall screen
+     * (reached via [onInformationRequested]) or from an install flow (e.g. the Play Store) both
+     * land back here — this is the only reliable point to notice either change. */
+    fun syncInstalledApps() {
+        if (isLoading) return
+        viewModelScope.launch {
+            val apps = AppRepository.loadLaunchableApps(getApplication())
+            val installedKeys = apps.map { it.key }.toSet()
+
+            for (page in pages) {
+                for (i in page.slots.indices) {
+                    when (val slot = page.slots[i]) {
+                        is GridItem.Entry -> if (slot.app.key !in installedKeys) page.slots[i] = null
+                        is GridItem.FolderEntry -> {
+                            val folder = slot.folder
+                            for (j in folder.items.indices) {
+                                val app = folder.items[j]
+                                if (app != null && app.key !in installedKeys) folder.items[j] = null
+                            }
+                            if (folder.isEmpty()) {
+                                if (openFolder?.id == folder.id) closeFolder()
+                                page.slots[i] = null
+                            }
+                        }
+                        null -> {}
+                    }
+                }
+            }
+
+            placeNewlyInstalledApps(apps)
+        }
+    }
+
+    /** Adds every app in [apps] that isn't already placed anywhere in the grid (home pages or
+     * folders) to the first free home slot. */
+    private fun placeNewlyInstalledApps(apps: List<AppInfo>) {
         val placedKeys = mutableSetOf<String>()
         for (page in pages) {
             for (slot in page.slots) {

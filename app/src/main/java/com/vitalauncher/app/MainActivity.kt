@@ -65,6 +65,13 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Forces the ViewModel (and with it, SoundManager.init) to be created synchronously here
+        // rather than lazily whenever Compose first reads `viewModel` — that first read happens
+        // inside setContent{} below, which isn't composed until the next frame, i.e. after
+        // onResume() already ran. SoundManager.onActivityResume() in onResume() needs the
+        // MediaPlayer to already exist so it can actually start the menu music on cold start,
+        // instead of silently no-oping and only starting it after the next app launch/return.
+        viewModel
         WindowCompat.setDecorFitsSystemWindows(window, false)
         window.statusBarColor = android.graphics.Color.TRANSPARENT
         window.navigationBarColor = android.graphics.Color.TRANSPARENT
@@ -99,6 +106,11 @@ class MainActivity : ComponentActivity() {
         // Fires on cold start too, but the "returned home" chime only actually plays if an app
         // launch armed it — see SoundManager.notifyAppLaunched.
         SoundManager.onActivityResume()
+        // Also the reliable point to notice apps installed/uninstalled while we were backgrounded
+        // — including returning from the "Information" button's system uninstall screen — since
+        // there's no manifest broadcast receiver for package changes; see
+        // LauncherViewModel.syncInstalledApps.
+        viewModel.syncInstalledApps()
     }
 
     override fun onPause() {

@@ -24,6 +24,7 @@ object SoundManager {
     private var itemTapId = 0
     private var launchAppId = 0
     private var returnHomeId = 0
+    private var pageSwipeId = 0
 
     /** Set right before an app is launched; consumed on the next [onActivityResume] so the "back
      * home" chime plays only when actually returning from that launch, not on cold start. */
@@ -57,6 +58,7 @@ object SoundManager {
         itemTapId = pool.load(appContext, R.raw.item_tap, 1)
         launchAppId = pool.load(appContext, R.raw.launch_app, 1)
         returnHomeId = pool.load(appContext, R.raw.return_home, 1)
+        pageSwipeId = pool.load(appContext, R.raw.page_swipe, 1)
 
         menuMusic = MediaPlayer.create(appContext, R.raw.menu_music)?.apply {
             isLooping = true
@@ -67,6 +69,7 @@ object SoundManager {
     fun playEditMode() = play(editModeId)
     fun playExitEditMode() = play(exitEditModeId)
     fun playItemTap() = play(itemTapId)
+    fun playPageSwipe() = play(pageSwipeId)
 
     /** Call at the moment an app is actually launched (not when a folder opens). */
     fun notifyAppLaunched() {

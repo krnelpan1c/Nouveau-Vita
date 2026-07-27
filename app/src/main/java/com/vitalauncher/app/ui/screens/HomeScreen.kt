@@ -10,6 +10,7 @@ import androidx.compose.foundation.pager.VerticalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -34,8 +35,16 @@ fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
     val pagerState = rememberPagerState(pageCount = { viewModel.pages.size })
     val swipeProgress = pagerState.currentPageOffsetFraction
 
+    // Suppresses the swipe chime on the very first composition, where currentPage "changes" from
+    // nothing to the initial page rather than from an actual swipe/navigation.
+    val isFirstPageRender = remember { mutableStateOf(true) }
     LaunchedEffect(pagerState.currentPage) {
         viewModel.onCurrentPageChanged(pagerState.currentPage)
+        if (isFirstPageRender.value) {
+            isFirstPageRender.value = false
+        } else {
+            SoundManager.playPageSwipe()
+        }
     }
 
     LaunchedEffect(viewModel.pendingPageScrollTo) {
