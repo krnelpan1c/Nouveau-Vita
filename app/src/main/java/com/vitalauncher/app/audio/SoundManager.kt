@@ -1,6 +1,8 @@
 package com.vitalauncher.app.audio
 
 import android.content.Context
+import android.net.Uri
+import java.io.File
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.media.SoundPool
@@ -60,9 +62,86 @@ object SoundManager {
         returnHomeId = pool.load(appContext, R.raw.return_home, 1)
         pageSwipeId = pool.load(appContext, R.raw.page_swipe, 1)
 
-        menuMusic = MediaPlayer.create(appContext, R.raw.menu_music)?.apply {
+        menuMusic = buildMusicPlayer(appContext)
+    }
+
+
+    private fun customMusicFile(context: Context) = File(context.filesDir, "custom_music")
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences("sound_prefs", Context.MODE_PRIVATE)
+
+    /** True when the user has chosen their own audio file for the menu music. */
+    fun isCustomMusic(context: Context): Boolean =
+        prefs(context).getBoolean("use_custom_music", false) && customMusicFile(context).exists()
+
+    /** Display name of the custom track, or null when none is set. */
+    fun customMusicName(context: Context): String? =
+        if (customMusicFile(context).exists()) prefs(context).getString("custom_music_name", null) else null
+
+    private fun buildMusicPlayer(context: Context): MediaPlayer? {
+        val player = if (isCustomMusic(context)) {
+            try {
+                MediaPlayer().apply {
+                    setDataSource(customMusicFile(context).absolutePath)
+                    prepare()
+                }
+            } catch (e: Exception) {
+                MediaPlayer.create(context, R.raw.menu_music)
+            }
+        } else {
+            MediaPlayer.create(context, R.raw.menu_music)
+        }
+        return player?.apply {
             isLooping = true
             setVolume(MUSIC_VOLUME, MUSIC_VOLUME)
+        }
+    }
+
+    private fun swapPlayer(context: Context) {
+        val old = menuMusic
+        old?.release()
+        menuMusic = buildMusicPlayer(context)
+        menuMusic?.start()
+    }
+
+    /** Switches to the previously added custom track, if one exists. */
+    fun useCustomMusic(context: Context) {
+        if (!customMusicFile(context).exists()) return
+        prefs(context).edit().putBoolean("use_custom_music", true).apply()
+        swapPlayer(context.applicationContext)
+    }
+
+    /** Switches back to the bundled menu music. */
+    fun useDefaultMusic(context: Context) {
+        prefs(context).edit().putBoolean("use_custom_music", false).apply()
+        swapPlayer(context.applicationContext)
+    }
+
+    /** Copies the chosen audio [uri] into app storage and makes it the menu music.
+     * Returns false if the file couldn't be read or played. */
+    fun setCustomMusic(context: Context, uri: Uri, displayName: String): Boolean {
+        val appContext = context.applicationContext
+        val target = customMusicFile(appContext)
+        return try {
+            appContext.contentResolver.openInputStream(uri)?.use { input ->
+                target.outputStream().use { input.copyTo(it) }
+            } ?: return false
+            // Validate that it is actually playable before committing.
+            MediaPlayer().apply {
+                setDataSource(target.absolutePath)
+                prepare()
+                release()
+            }
+            prefs(appContext).edit()
+                .putBoolean("use_custom_music", true)
+                .putString("custom_music_name", displayName)
+                .apply()
+            swapPlayer(appContext)
+            true
+        } catch (e: Exception) {
+            target.delete()
+            false
         }
     }
 

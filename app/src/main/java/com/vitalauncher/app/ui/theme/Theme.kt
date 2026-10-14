@@ -31,6 +31,21 @@ val VitaColorThemes = listOf(
     VitaColorTheme("Forest", Color(0xFF0A3E1E), Color(0xFF1F9B4E), Color(0xFFD8F5C7)),
     VitaColorTheme("Midnight", Color(0xFF05050F), Color(0xFF1A1A38), Color(0xFF3D3D5C)),
     VitaColorTheme("Blossom", Color(0xFF4E0A2E), Color(0xFFCB1C6F), Color(0xFFFFD9EC)),
+    VitaColorTheme("Aurora", Color(0xFF062B3A), Color(0xFF14B8A6), Color(0xFFC8FFE9)),
+    VitaColorTheme("Ember", Color(0xFF2A0505), Color(0xFFC62828), Color(0xFFFFB199)),
+    VitaColorTheme("Lagoon", Color(0xFF003B46), Color(0xFF07A8C4), Color(0xFFD2F6FF)),
+    VitaColorTheme("Lavender", Color(0xFF241B4B), Color(0xFF8E7CE0), Color(0xFFEDE6FF)),
+    VitaColorTheme("Citrus", Color(0xFF4A3B00), Color(0xFFF2B300), Color(0xFFFFF7C2)),
+    VitaColorTheme("Mint", Color(0xFF0B3B35), Color(0xFF3DCCA4), Color(0xFFE4FFF5)),
+    VitaColorTheme("Rose Gold", Color(0xFF4A2331), Color(0xFFE08A9A), Color(0xFFFFE7DA)),
+    VitaColorTheme("Steel", Color(0xFF1B232B), Color(0xFF5E7488), Color(0xFFD5DEE6)),
+    VitaColorTheme("Crimson Night", Color(0xFF0D0214), Color(0xFF6E1038), Color(0xFFE5486F)),
+    VitaColorTheme("Tropical", Color(0xFF0B3D91), Color(0xFF12C2A5), Color(0xFFFFF29E)),
+    VitaColorTheme("Cotton Candy", Color(0xFF5B3FA6), Color(0xFFFF7EB6), Color(0xFFB9F1FF)),
+    VitaColorTheme("Desert", Color(0xFF3D1F0B), Color(0xFFC77D3A), Color(0xFFF7E1B5)),
+    VitaColorTheme("Glacier", Color(0xFF16405E), Color(0xFF7FC4E8), Color(0xFFFFFFFF)),
+    VitaColorTheme("Graphite", Color(0xFF0B0B0D), Color(0xFF2B2B30), Color(0xFF767680)),
+    VitaColorTheme("Emerald", Color(0xFF02281A), Color(0xFF0E8F5B), Color(0xFF7DF2B8)),
 )
 
 /** The Vita's signature vertical sky gradient background, from deep blue to pale horizon, or
