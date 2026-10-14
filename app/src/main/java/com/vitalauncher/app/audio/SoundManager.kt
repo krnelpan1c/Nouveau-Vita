@@ -32,10 +32,10 @@ object SoundManager {
      * home" chime plays only when actually returning from that launch, not on cold start. */
     private var awaitingReturnHome = false
 
-    /** Both play at full volume — the source recordings themselves are mixed so SFX already cut
-     * through the music clearly, so no extra in-app ducking is needed on top of that. */
-    private const val SFX_VOLUME = 1f
-    private const val MUSIC_VOLUME = 1f
+    /** Both default to full volume — the source recordings themselves are mixed so SFX already
+     * cut through the music clearly. The user can rebalance them from Customize > Audio Mix. */
+    private var sfxVolume = 1f
+    private var musicVolume = 1f
 
     fun init(context: Context) {
         if (soundPool != null) return
@@ -62,6 +62,8 @@ object SoundManager {
         returnHomeId = pool.load(appContext, R.raw.return_home, 1)
         pageSwipeId = pool.load(appContext, R.raw.page_swipe, 1)
 
+        sfxVolume = prefs(appContext).getFloat("sfx_volume", 1f)
+        musicVolume = prefs(appContext).getFloat("music_volume", 1f)
         menuMusic = buildMusicPlayer(appContext)
     }
 
@@ -70,6 +72,23 @@ object SoundManager {
 
     private fun prefs(context: Context) =
         context.getSharedPreferences("sound_prefs", Context.MODE_PRIVATE)
+
+    fun getMusicVolume(): Float = musicVolume
+    fun getSfxVolume(): Float = sfxVolume
+
+    fun setMusicVolume(context: Context, value: Float) {
+        musicVolume = value.coerceIn(0f, 1f)
+        menuMusic?.setVolume(musicVolume, musicVolume)
+        prefs(context).edit().putFloat("music_volume", musicVolume).apply()
+    }
+
+    fun setSfxVolume(context: Context, value: Float) {
+        sfxVolume = value.coerceIn(0f, 1f)
+        prefs(context).edit().putFloat("sfx_volume", sfxVolume).apply()
+    }
+
+    /** Plays a sample effect so the user can hear the SFX level while adjusting it. */
+    fun playSfxPreview() = play(itemTapId)
 
     /** True when the user has chosen their own audio file for the menu music. */
     fun isCustomMusic(context: Context): Boolean =
@@ -94,7 +113,7 @@ object SoundManager {
         }
         return player?.apply {
             isLooping = true
-            setVolume(MUSIC_VOLUME, MUSIC_VOLUME)
+            setVolume(musicVolume, musicVolume)
         }
     }
 
@@ -179,6 +198,6 @@ object SoundManager {
 
     private fun play(soundId: Int) {
         if (soundId == 0) return
-        soundPool?.play(soundId, SFX_VOLUME, SFX_VOLUME, 1, 0, 1f)
+        soundPool?.play(soundId, sfxVolume, sfxVolume, 1, 0, 1f)
     }
 }

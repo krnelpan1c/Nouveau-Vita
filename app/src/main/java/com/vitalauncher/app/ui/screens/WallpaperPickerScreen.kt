@@ -42,8 +42,11 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Palette
+import androidx.compose.material.icons.filled.VolumeUp
 import androidx.compose.material.icons.filled.Wallpaper
 import androidx.compose.material3.Icon
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -79,6 +82,7 @@ private enum class CustomizePage(val depth: Int, val title: String) {
     BACKGROUND(1, "Background"),
     GRADIENT(2, "Gradient"),
     MUSIC(1, "Music"),
+    AUDIO_MIX(1, "Audio Mix"),
 }
 
 /**
@@ -164,6 +168,11 @@ fun WallpaperPickerScreen(viewModel: LauncherViewModel, modifier: Modifier = Mod
                                 page = CustomizePage.MUSIC
                             }
                         }
+                        item {
+                            SettingsRow(Icons.Filled.VolumeUp, "Audio Mix", showArrow = true) {
+                                page = CustomizePage.AUDIO_MIX
+                            }
+                        }
                     }
 
                     CustomizePage.BACKGROUND -> BackgroundList(
@@ -180,6 +189,7 @@ fun WallpaperPickerScreen(viewModel: LauncherViewModel, modifier: Modifier = Mod
 
                     CustomizePage.GRADIENT -> GradientList(viewModel)
                     CustomizePage.MUSIC -> MusicList()
+                    CustomizePage.AUDIO_MIX -> AudioMixList()
                 }
             }
         }
@@ -311,6 +321,76 @@ private fun MusicList() {
                 onClick = { picker.launch(arrayOf("audio/*")) },
             )
         }
+    }
+}
+
+@Composable
+private fun AudioMixList() {
+    val context = LocalContext.current
+    var music by remember { mutableStateOf(SoundManager.getMusicVolume()) }
+    var sfx by remember { mutableStateOf(SoundManager.getSfxVolume()) }
+
+    ListColumn {
+        item {
+            VolumeSliderRow(
+                icon = Icons.Filled.MusicNote,
+                label = "Music",
+                value = music,
+                onValueChange = {
+                    music = it
+                    SoundManager.setMusicVolume(context, it)
+                },
+            )
+        }
+        item {
+            VolumeSliderRow(
+                icon = Icons.Filled.VolumeUp,
+                label = "Sound Effects",
+                value = sfx,
+                onValueChange = {
+                    sfx = it
+                    SoundManager.setSfxVolume(context, it)
+                },
+                // Play a sample when the finger lifts so the new level can be heard.
+                onValueChangeFinished = { SoundManager.playSfxPreview() },
+            )
+        }
+    }
+}
+
+@Composable
+private fun VolumeSliderRow(
+    icon: ImageVector,
+    label: String,
+    value: Float,
+    onValueChange: (Float) -> Unit,
+    onValueChangeFinished: () -> Unit = {},
+) {
+    Column {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 14.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(30.dp))
+                Spacer(Modifier.width(16.dp))
+                Text(text = label, color = Color.White, fontSize = 18.sp, modifier = Modifier.weight(1f))
+                Text(
+                    text = "${(value * 100).toInt()}%",
+                    color = Color.White.copy(alpha = 0.8f),
+                    fontSize = 16.sp,
+                )
+            }
+            Slider(
+                value = value,
+                onValueChange = onValueChange,
+                onValueChangeFinished = onValueChangeFinished,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color.White,
+                    activeTrackColor = Color.White,
+                    inactiveTrackColor = Color.White.copy(alpha = 0.25f),
+                ),
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.2f)))
     }
 }
 
