@@ -3,6 +3,11 @@ name: Release build
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and attach the APK to
+        required: true
 
 permissions:
   contents: write
@@ -12,6 +17,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
 
       - uses: actions/setup-java@v4
         with:
@@ -34,9 +41,9 @@ jobs:
           ./gradlew assembleRelease
 
       - name: Rename APK
-        run: cp app/build/outputs/apk/release/app-release.apk "NouveauVita-${{ github.event.release.tag_name }}.apk"
+        run: cp app/build/outputs/apk/release/app-release.apk "NouveauVita-${{ inputs.tag || github.event.release.tag_name }}.apk"
 
       - name: Attach APK to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${{ github.event.release.tag_name }}" "NouveauVita-${{ github.event.release.tag_name }}.apk" --clobber
+        run: gh release upload "${{ inputs.tag || github.event.release.tag_name }}" "NouveauVita-${{ inputs.tag || github.event.release.tag_name }}.apk" --clobber
