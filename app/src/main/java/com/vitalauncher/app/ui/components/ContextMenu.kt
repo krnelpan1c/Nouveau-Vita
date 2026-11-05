@@ -22,6 +22,7 @@ import com.vitalauncher.app.ui.theme.VitaColors
 fun BubbleContextMenu(
     modifier: Modifier = Modifier,
     canShowInformation: Boolean,
+    informationLabel: String = "Information",
     onCreateFolder: () -> Unit,
     onInformation: () -> Unit,
 ) {
@@ -34,7 +35,7 @@ fun BubbleContextMenu(
         MenuRow(text = "Create Folder", onClick = onCreateFolder)
         if (canShowInformation) {
             MenuDivider()
-            MenuRow(text = "Information", onClick = onInformation)
+            MenuRow(text = informationLabel, onClick = onInformation)
         }
     }
 }

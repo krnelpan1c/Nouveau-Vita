@@ -13,13 +13,17 @@ val ROW_SLOT_COUNTS = listOf(3, 4, 3)
 val SLOTS_PER_PAGE = ROW_SLOT_COUNTS.sum()
 const val MAX_FOLDER_ITEMS = 10
 
+/** A launchable thing on the home screen: a regular app, or — when [shortcutId] is set — a pinned
+ * shortcut (e.g. a website or a specific chat) published by [packageName] and accepted by us. */
 data class AppInfo(
     val packageName: String,
     val activityClassName: String,
     val label: String,
     val icon: ImageBitmap,
+    val shortcutId: String? = null,
 ) {
-    val key: String get() = "$packageName/$activityClassName"
+    val isShortcut: Boolean get() = shortcutId != null
+    val key: String get() = if (shortcutId != null) "shortcut:$packageName/$shortcutId" else "$packageName/$activityClassName"
 }
 
 /** A folder's contents are a fixed-size grid of slots, exactly like [Page] — not a compact list —

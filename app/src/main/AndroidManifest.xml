@@ -31,6 +31,18 @@
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
+
+        <!-- Receives "Add to Home screen" requests from other apps while we're the default launcher. -->
+        <activity
+            android:name=".PinShortcutActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.content.pm.action.CONFIRM_PIN_SHORTCUT" />
+            </intent-filter>
+        </activity>
     </application>
 
 </manifest>

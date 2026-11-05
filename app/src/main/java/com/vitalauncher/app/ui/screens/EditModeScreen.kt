@@ -325,9 +325,11 @@ fun EditModeScreen(
                     is SlotLocation.Home -> location.pageIndex to location.slotIndex
                     is SlotLocation.InFolder -> 0 to location.slotIndex
                 }
-                val canShowInfo = slotAt(menuPage, menuSlot) is GridItem.Entry
+                val menuItem = slotAt(menuPage, menuSlot)
+                val canShowInfo = menuItem is GridItem.Entry
                 BubbleContextMenu(
                     canShowInformation = canShowInfo,
+                    informationLabel = if ((menuItem as? GridItem.Entry)?.app?.isShortcut == true) "Remove" else "Information",
                     onCreateFolder = {
                         SoundManager.playItemTap()
                         viewModel.onCreateFolderRequested(location)

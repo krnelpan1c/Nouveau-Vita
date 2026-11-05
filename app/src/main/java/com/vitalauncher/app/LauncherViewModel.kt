@@ -157,16 +157,20 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         viewModelScope.launch {
             val apps = AppRepository.loadLaunchableApps(getApplication())
             val installedKeys = apps.map { it.key }.toSet()
+            // Shortcuts can only be read while we're the default launcher; otherwise keep the
+            // ones already placed rather than mistaking "can't read" for "was removed".
+            val keepShortcuts = !AppRepository.hasShortcutHostPermission(getApplication())
+            fun isGone(app: AppInfo) = app.key !in installedKeys && !(app.isShortcut && keepShortcuts)
 
             for (page in pages) {
                 for (i in page.slots.indices) {
                     when (val slot = page.slots[i]) {
-                        is GridItem.Entry -> if (slot.app.key !in installedKeys) page.slots[i] = null
+                        is GridItem.Entry -> if (isGone(slot.app)) page.slots[i] = null
                         is GridItem.FolderEntry -> {
                             val folder = slot.folder
                             for (j in folder.items.indices) {
                                 val app = folder.items[j]
-                                if (app != null && app.key !in installedKeys) folder.items[j] = null
+                                if (app != null && isGone(app)) folder.items[j] = null
                             }
                             if (folder.isEmpty()) {
                                 if (openFolder?.id == folder.id) closeFolder()
@@ -384,6 +388,13 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         contextMenuFor = null
         val item = slotAt(location)
         val app = (item as? GridItem.Entry)?.app ?: return
+        if (app.isShortcut) {
+            // Shortcuts have no app-info screen; this row is "Remove" for them instead.
+            AppRepository.unpinShortcut(getApplication(), app)
+            setSlot(location, null)
+            grabbed = null
+            return
+        }
         AppRepository.openAppInfo(getApplication(), app)
     }
 

@@ -1,7 +1,7 @@
 package com.vitalauncher.app.ui.components
 
 import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -19,6 +19,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.snapshotFlow
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -61,7 +64,7 @@ private const val TILT_CAMERA_DISTANCE = 10f
 fun BubbleShell(
     modifier: Modifier = Modifier,
     isGrabbed: Boolean = false,
-    swipeProgress: Float = 0f,
+    swipeProgress: () -> Float = { 0f },
     wiggleSeed: Int = 0,
     showRimShade: Boolean = true,
     onClick: (() -> Unit)? = null,
@@ -72,27 +75,24 @@ fun BubbleShell(
     val magnitudeFactor = remember(wiggleSeed) { 0.7f + random.nextFloat() * 0.6f }
     val springStiffness = remember(wiggleSeed) { 220f + random.nextFloat() * 380f }
 
-    val animatedOffset by animateFloatAsState(
-        targetValue = swipeProgress * magnitudeFactor * MAX_BOB_OFFSET_DP,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = springStiffness),
-        label = "bubbleBob",
-    )
-    // Positive swipeProgress = advancing to the next page (content sliding up), so a positive
-    // rotationX here noses the bubble down/back, away from the viewer, to sell the lag; negative
-    // swipeProgress = going back to the previous page (content sliding down) tips it up/forward.
-    val animatedTiltX by animateFloatAsState(
-        targetValue = swipeProgress * magnitudeFactor * MAX_TILT_ANGLE,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = springStiffness),
-        label = "bubbleTilt",
-    )
-
+    // Spring-follow the pager's drag via Animatables read only in the graphicsLayer (draw phase),
+    // so a swipe never triggers recomposition/relayout of every bubble on every frame.
+    val bobSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = springStiffness)
+    val bob = remember { Animatable(0f) }
+    val tilt = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        snapshotFlow { swipeProgress() }.collect { p ->
+            launch { bob.animateTo(p * magnitudeFactor * MAX_BOB_OFFSET_DP, bobSpec) }
+            launch { tilt.animateTo(p * magnitudeFactor * MAX_TILT_ANGLE, bobSpec) }
+        }
+    }
     val interactionSource = remember { MutableInteractionSource() }
 
     Box(
         modifier = modifier
-            .offset(y = animatedOffset.dp)
             .graphicsLayer {
-                rotationX = animatedTiltX
+                translationY = bob.value * density
+                rotationX = tilt.value
                 cameraDistance = TILT_CAMERA_DISTANCE * density
             }
             .then(
@@ -189,7 +189,7 @@ fun AppBubble(
     modifier: Modifier = Modifier,
     showLabel: Boolean = true,
     isGrabbed: Boolean = false,
-    swipeProgress: Float = 0f,
+    swipeProgress: () -> Float = { 0f },
     wiggleSeed: Int = app.key.hashCode(),
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
@@ -237,7 +237,7 @@ fun FolderBubble(
     modifier: Modifier = Modifier,
     showLabel: Boolean = true,
     isGrabbed: Boolean = false,
-    swipeProgress: Float = 0f,
+    swipeProgress: () -> Float = { 0f },
     wiggleSeed: Int = folder.id.hashCode(),
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,

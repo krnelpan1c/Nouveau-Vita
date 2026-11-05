@@ -33,7 +33,7 @@ private val BUBBLE_SIZE = 92.dp
 fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val pagerState = rememberPagerState(pageCount = { viewModel.pages.size })
-    val swipeProgress = pagerState.currentPageOffsetFraction
+    val swipeProgress: () -> Float = { pagerState.currentPageOffsetFraction }
 
     // Suppresses the swipe chime on the very first composition, where currentPage "changes" from
     // nothing to the initial page rather than from an actual swipe/navigation.
