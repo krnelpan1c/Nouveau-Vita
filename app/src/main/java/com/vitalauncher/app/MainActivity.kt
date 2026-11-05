@@ -3,6 +3,7 @@ package com.vitalauncher.app
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import android.os.Process
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
@@ -34,12 +35,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -69,8 +69,9 @@ class MainActivity : ComponentActivity() {
     private var earlySystemWallpaper = false
 
     private fun applyWallpaperFlag(enabled: Boolean) {
-        if (enabled) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
-        else window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+        // Always kept on (as originally): the flag also drives the system's app open/close window
+        // animations for a launcher, which change when it's removed.
+        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
         getSharedPreferences(WINDOW_PREFS, MODE_PRIVATE).edit().putBoolean(KEY_SYSTEM_WALLPAPER, enabled).apply()
     }
 
@@ -91,17 +92,19 @@ class MainActivity : ComponentActivity() {
         }
         // Lets the system-drawn wallpaper (static image or live) show through behind our window
         // whenever the gradient background layer goes transparent for it.
-        // Only requested while the system-wallpaper background is active (see applyWallpaperFlag):
-        // keeping it on under an opaque gradient makes the compositor render the wallpaper layer
-        // for nothing every frame. The last-used mode is cached so it's right from the first frame.
+        // The last-used background mode is cached so the right background shows from the first frame.
         earlySystemWallpaper = getSharedPreferences(WINDOW_PREFS, MODE_PRIVATE).getBoolean(KEY_SYSTEM_WALLPAPER, false)
         applyWallpaperFlag(earlySystemWallpaper)
-        hideSystemBars()
+        hideSystemBars(force = true)
 
         setContent {
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Transparent) {
                 VitaLauncherRoot(viewModel, earlySystemWallpaper) { applyWallpaperFlag(it) }
             }
+        }
+        val uiTid = Process.myTid()
+        window.decorView.post {
+            PerformanceBooster.ensureInitialized(this, uiTid)
         }
     }
 
@@ -113,11 +116,12 @@ class MainActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus) hideSystemBars(force = false)
     }
 
     override fun onResume() {
         super.onResume()
+        PerformanceBooster.boostForResume()
         // Fires on cold start too, but the "returned home" chime only actually plays if an app
         // launch armed it — see SoundManager.notifyAppLaunched.
         SoundManager.onActivityResume()
@@ -127,7 +131,6 @@ class MainActivity : ComponentActivity() {
         // LauncherViewModel.syncInstalledApps.
         viewModel.syncInstalledApps()
     }
-
     override fun onPause() {
         super.onPause()
         // A launcher is "backgrounded" every time any other app opens, so this is the reliable
@@ -139,16 +142,22 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        PerformanceBooster.close()
         SoundManager.release()
     }
 
     /** Hides the real status and navigation bars so only our own Vita-style bar shows; a swipe
      * from an edge can still reveal them temporarily (BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE),
      * transparent and without the forced black scrim behind the transient nav bar. */
-    private fun hideSystemBars() {
+    private fun hideSystemBars(force: Boolean = false) {
+        val types = WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars()
+        if (!force) {
+            val insets = ViewCompat.getRootWindowInsets(window.decorView)
+            if (insets != null && !insets.isVisible(types)) return
+        }
         val controller = WindowInsetsControllerCompat(window, window.decorView)
-        controller.hide(WindowInsetsCompat.Type.statusBars() or WindowInsetsCompat.Type.navigationBars())
         controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller.hide(types)
     }
 
     // ---------- Gamepad / D-pad navigation ----------
@@ -323,15 +332,20 @@ private fun VitaLauncherRoot(
             .fillMaxSize()
             .pointerInput(Unit) {
                 awaitPointerEventScope {
+                    var anyPressedLast = false
                     while (true) {
                         val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.changes.any { it.pressed }) {
-                            viewModel.onTouchInteraction()
-                        } else {
+                        val anyPressed = event.changes.any { it.pressed }
+                        if (anyPressed) {
+                            if (!anyPressedLast || viewModel.showFocusRing) {
+                                viewModel.onTouchInteraction()
+                            }
+                        } else if (anyPressedLast || !viewModel.dragArmed) {
                             // Every pointer is up: any touch that was already down when edit mode
                             // was entered has now fully released, so a fresh drag can be trusted.
                             viewModel.armDrag()
                         }
+                        anyPressedLast = anyPressed
                     }
                 }
             },

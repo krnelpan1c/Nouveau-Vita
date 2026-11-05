@@ -1,12 +1,13 @@
 package com.vitalauncher.app.audio
 
 import android.content.Context
-import android.net.Uri
-import java.io.File
 import android.media.AudioAttributes
+import android.media.AudioManager
 import android.media.MediaPlayer
 import android.media.SoundPool
+import android.net.Uri
 import com.vitalauncher.app.R
+import java.io.File
 
 /**
  * All of the launcher's sound effects and background music, as one process-wide singleton — a
@@ -37,22 +38,30 @@ object SoundManager {
     private var sfxVolume = 1f
     private var musicVolume = 1f
 
+    /**
+     * Shared attributes for both [SoundPool] and [MediaPlayer]:
+     * - [AudioAttributes.USAGE_GAME] routes both through the media volume stream (`STREAM_MUSIC`)
+     *   rather than the quieter system-sounds stream `ASSISTANCE_SONIFICATION` maps to.
+     * - Giving [MediaPlayer] explicit [AudioAttributes.USAGE_GAME] (instead of `MediaPlayer.create`'s
+     *   default `USAGE_UNKNOWN` deep-buffer stream) keeps music and UI SFX on the same primary
+     *   AudioFlinger output thread, preventing Qualcomm `volume_listener` (`music_helper`) effect
+     *   collisions, blocking ALSA/ACDB DSP recalibrations on [playPageSwipe], and Bluetooth AVRCP
+     *   active-player churn on app pause/resume.
+     */
+    private val launcherAudioAttributes: AudioAttributes by lazy {
+        AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_GAME)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+            .build()
+    }
+
     fun init(context: Context) {
         if (soundPool != null) return
         val appContext = context.applicationContext
 
         val pool = SoundPool.Builder()
             .setMaxStreams(4)
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    // USAGE_GAME routes through the media volume stream (same as the music
-                    // MediaPlayer below) rather than the separate, often much-quieter "system
-                    // sounds" stream ASSISTANCE_SONIFICATION used to map to — that mismatch was
-                    // why turning the in-app gain up didn't make the SFX any louder.
-                    .setUsage(AudioAttributes.USAGE_GAME)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build(),
-            )
+            .setAudioAttributes(launcherAudioAttributes)
             .build()
         soundPool = pool
         editModeId = pool.load(appContext, R.raw.edit_mode, 1)
@@ -98,18 +107,25 @@ object SoundManager {
     fun customMusicName(context: Context): String? =
         if (customMusicFile(context).exists()) prefs(context).getString("custom_music_name", null) else null
 
+    private fun createBundledMusicPlayer(context: Context): MediaPlayer? {
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+        val sessionId = audioManager?.generateAudioSessionId() ?: AudioManager.AUDIO_SESSION_ID_GENERATE
+        return MediaPlayer.create(context, R.raw.menu_music, launcherAudioAttributes, sessionId)
+    }
+
     private fun buildMusicPlayer(context: Context): MediaPlayer? {
         val player = if (isCustomMusic(context)) {
             try {
                 MediaPlayer().apply {
+                    setAudioAttributes(launcherAudioAttributes)
                     setDataSource(customMusicFile(context).absolutePath)
                     prepare()
                 }
             } catch (e: Exception) {
-                MediaPlayer.create(context, R.raw.menu_music)
+                createBundledMusicPlayer(context)
             }
         } else {
-            MediaPlayer.create(context, R.raw.menu_music)
+            createBundledMusicPlayer(context)
         }
         return player?.apply {
             isLooping = true
@@ -148,6 +164,7 @@ object SoundManager {
             } ?: return false
             // Validate that it is actually playable before committing.
             MediaPlayer().apply {
+                setAudioAttributes(launcherAudioAttributes)
                 setDataSource(target.absolutePath)
                 prepare()
                 release()

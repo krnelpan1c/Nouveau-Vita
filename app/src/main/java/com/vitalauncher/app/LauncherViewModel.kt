@@ -1,6 +1,7 @@
 package com.vitalauncher.app
 
 import android.app.Application
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -29,6 +30,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
+@Stable
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Home screen pages. Always has at least one page. */
@@ -102,7 +104,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         private set
 
     fun armDrag() {
-        dragArmed = true
+        if (!dragArmed) dragArmed = true
     }
 
     init {
@@ -221,6 +223,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                 .distinctUntilChanged()
                 .collect { json ->
                     withContext(Dispatchers.IO) { LauncherStateStore.save(getApplication(), json) }
+                    lastSavedJson = json
                 }
         }
     }
@@ -228,10 +231,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     /** Synchronously flushes the current layout to disk, bypassing the debounce — called when the
      * activity is about to go into the background, since the process may be killed shortly after
      * without the debounced write ever getting a chance to run. */
+    @Volatile private var lastSavedJson: String? = null
+
     fun persistImmediately() {
         if (isLoading) return
         val json = LauncherStateStore.serialize(pages.toList(), backgroundMode, colorThemeIndex)
-        LauncherStateStore.save(getApplication(), json)
+        // This runs in onPause, i.e. right as another app is launching, so skip the disk write
+        // when nothing changed and otherwise keep the (fsync-ing) commit off the main thread.
+        if (json == lastSavedJson) return
+        lastSavedJson = json
+        val app = getApplication<Application>()
+        Thread { LauncherStateStore.save(app, json) }.start()
     }
 
     // ---------- Navigation ----------
@@ -422,7 +432,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * hiding it then would make the held icon look like it vanished, with no visual trace that
      * it's still picked up. */
     fun onTouchInteraction() {
-        if (grabbed == null) showFocusRing = false
+        if (grabbed == null && showFocusRing) showFocusRing = false
     }
 
     fun clearPendingPageScroll() {

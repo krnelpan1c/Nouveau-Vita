@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vitalauncher.app.LauncherViewModel
+import com.vitalauncher.app.PerformanceBooster
 import com.vitalauncher.app.audio.SoundManager
 import com.vitalauncher.app.model.GridItem
 import com.vitalauncher.app.model.SLOTS_PER_PAGE
@@ -61,6 +62,7 @@ import com.vitalauncher.app.ui.components.FOLDER_PITCH_SCALE
 import com.vitalauncher.app.ui.components.FolderBubble
 import com.vitalauncher.app.ui.components.PageGrid
 import com.vitalauncher.app.ui.components.PageIndicatorDots
+import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
 private val EDIT_BUBBLE_SIZE = 64.dp
@@ -101,6 +103,15 @@ fun EditModeScreen(
         if (isHomeContext) viewModel.onCurrentPageChanged(pagerState.currentPage)
     }
 
+    LaunchedEffect(pagerState.isScrollInProgress) {
+        if (!pagerState.isScrollInProgress) return@LaunchedEffect
+        PerformanceBooster.boostScrollTick()
+        while (true) {
+            delay(48)
+            PerformanceBooster.boostScrollTick()
+        }
+    }
+
     // Root-coordinate center of every slot's "..." badge, keyed by location — kept continuously
     // up to date (not just at tap time) so the context menu can pop from the right spot whether
     // it was opened by touch or by the Y button acting on whatever the D-pad cursor highlights.
@@ -135,7 +146,11 @@ fun EditModeScreen(
         }
 
         Box(modifier = panelModifier) {
-            VerticalPager(state = pagerState, modifier = Modifier.fillMaxSize()) { pageIndex ->
+            VerticalPager(
+                state = pagerState,
+                beyondBoundsPageCount = 1,
+                modifier = Modifier.fillMaxSize(),
+            ) { pageIndex ->
                 var dragEscaped by remember { mutableStateOf(false) }
                 val focused = viewModel.focusedSlot
                 val focusedSlotIndex = if (viewModel.showFocusRing && focused != null) {
@@ -194,7 +209,9 @@ fun EditModeScreen(
                                 viewModel.openContextMenu(location)
                             }
                         },
-                        onBadgePositioned = { pos -> badgePositions[location] = pos },
+                        onBadgePositioned = { pos ->
+                            if (badgePositions[location] != pos) badgePositions[location] = pos
+                        },
                     )
                 }
             }

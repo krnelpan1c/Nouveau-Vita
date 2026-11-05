@@ -1,5 +1,7 @@
 package com.vitalauncher.app.model
 
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -15,6 +17,7 @@ const val MAX_FOLDER_ITEMS = 10
 
 /** A launchable thing on the home screen: a regular app, or — when [shortcutId] is set — a pinned
  * shortcut (e.g. a website or a specific chat) published by [packageName] and accepted by us. */
+@Immutable
 data class AppInfo(
     val packageName: String,
     val activityClassName: String,
@@ -29,6 +32,7 @@ data class AppInfo(
 /** A folder's contents are a fixed-size grid of slots, exactly like [Page] — not a compact list —
  * so an app can sit in any specific slot with real gaps around it. A compact list would silently
  * re-pack around whichever slot an app was dropped on, snapping it back next to the others. */
+@Stable
 class FolderInfo(
     val id: String = UUID.randomUUID().toString(),
     name: String = "Folder",
@@ -42,13 +46,19 @@ class FolderInfo(
     fun firstEmptySlot(): Int = items.indexOfFirst { it == null }
 }
 
+@Stable
 sealed class GridItem {
+    @Immutable
     data class Entry(val app: AppInfo) : GridItem()
+    @Stable
     data class FolderEntry(val folder: FolderInfo) : GridItem()
 }
 
 /** One page of the home screen (or the single page of a folder): a fixed-size list of slots. */
-class Page {
+@Stable
+class Page(
+    val id: String = UUID.randomUUID().toString(),
+) {
     val slots: SnapshotStateList<GridItem?> = mutableStateListOf<GridItem?>().apply {
         repeat(SLOTS_PER_PAGE) { add(null) }
     }
@@ -58,8 +68,11 @@ class Page {
 }
 
 /** Identifies a single slot, either on a home page or inside an open folder. */
+@Immutable
 sealed class SlotLocation {
+    @Immutable
     data class Home(val pageIndex: Int, val slotIndex: Int) : SlotLocation()
+    @Immutable
     data class InFolder(val folderId: String, val slotIndex: Int) : SlotLocation()
 }
 
