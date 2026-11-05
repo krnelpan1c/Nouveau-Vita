@@ -27,12 +27,15 @@ android {
 
     signingConfigs {
         create("release") {
-            val storeFilePath = localProperties.getProperty("RELEASE_STORE_FILE")
+            // Local builds read local.properties; CI (GitHub Actions) supplies the same keys as
+            // environment variables.
+            fun cred(key: String): String? = localProperties.getProperty(key) ?: System.getenv(key)
+            val storeFilePath = cred("RELEASE_STORE_FILE")
             if (storeFilePath != null) {
                 storeFile = rootProject.file(storeFilePath)
-                storePassword = localProperties.getProperty("RELEASE_STORE_PASSWORD")
-                keyAlias = localProperties.getProperty("RELEASE_KEY_ALIAS")
-                keyPassword = localProperties.getProperty("RELEASE_KEY_PASSWORD")
+                storePassword = cred("RELEASE_STORE_PASSWORD")
+                keyAlias = cred("RELEASE_KEY_ALIAS")
+                keyPassword = cred("RELEASE_KEY_PASSWORD")
             }
         }
     }
