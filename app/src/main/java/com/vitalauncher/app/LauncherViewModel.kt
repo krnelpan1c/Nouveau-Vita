@@ -152,9 +152,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * from [MainActivity.onResume], since returning from the system "app info"/uninstall screen
      * (reached via [onInformationRequested]) or from an install flow (e.g. the Play Store) both
      * land back here — this is the only reliable point to notice either change. */
+    private var lastSyncSignature: Set<String>? = null
+
     fun syncInstalledApps() {
         if (isLoading) return
         viewModelScope.launch {
+            // Returning home from another app is the most common trigger, and decoding every app's
+            // icon on each return competes with the UI for CPU/memory while the home screen is
+            // animating back in. Skip the full reload unless the installed set actually changed.
+            val signature = AppRepository.installedSignature(getApplication())
+            if (signature == lastSyncSignature) return@launch
+            lastSyncSignature = signature
             val apps = AppRepository.loadLaunchableApps(getApplication())
             val installedKeys = apps.map { it.key }.toSet()
             // Shortcuts can only be read while we're the default launcher; otherwise keep the

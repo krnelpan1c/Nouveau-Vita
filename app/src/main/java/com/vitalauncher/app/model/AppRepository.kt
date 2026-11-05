@@ -38,6 +38,26 @@ object AppRepository {
             .plus(loadPinnedShortcuts(context))
     }
 
+    /** A cheap fingerprint of what's installed/pinned right now (no icon decoding), so callers can
+     * tell whether a full [loadLaunchableApps] reload is needed at all. */
+    suspend fun installedSignature(context: Context): Set<String> = withContext(Dispatchers.IO) {
+        val pm = context.packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val keys = pm.queryIntentActivities(intent, PackageManager.MATCH_ALL)
+            .filter { it.activityInfo.packageName != context.packageName }
+            .mapTo(mutableSetOf()) { "${it.activityInfo.packageName}/${it.activityInfo.name}" }
+        if (hasShortcutHostPermission(context)) {
+            try {
+                val launcherApps = context.getSystemService(LauncherApps::class.java)
+                val query = LauncherApps.ShortcutQuery().setQueryFlags(LauncherApps.ShortcutQuery.FLAG_MATCH_PINNED)
+                launcherApps?.getShortcuts(query, Process.myUserHandle())?.forEach {
+                    if (it.isEnabled) keys.add("shortcut:${it.`package`}/${it.id}")
+                }
+            } catch (e: Exception) {
+            }
+        }
+        keys
+    }
     /** True while we're the default home app, the only state in which Android lets us read,
      * launch or unpin shortcuts. */
     fun hasShortcutHostPermission(context: Context): Boolean = try {

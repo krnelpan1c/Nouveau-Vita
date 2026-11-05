@@ -22,7 +22,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -39,22 +38,11 @@ import com.vitalauncher.app.ui.theme.VitaColors
 import androidx.compose.foundation.Image
 
 
-/**
- * The circular "glossy sphere" shell shared by app icons and folder bubbles. Bubbles bob
- * vertically and lean in real 3D (rotationX, not a flat in-plane spin) in reaction to an
- * in-progress vertical page swipe — like they're physically lagging behind the page's motion —
- * each with a bit of per-bubble lag so the whole row doesn't move in perfect lockstep. Swiping/
- * moving to the next page (content sliding up) noses the bubbles down; swiping/moving to the
- * previous page (content sliding down) tips them up.
- *
- * @param swipeProgress (currently unused: bob/tilt disabled to fix swipe lag) the pager's current drag offset (roughly -0.5..0.5); 0 when settled.
- */
+/** The circular "glossy sphere" shell shared by app icons and folder bubbles. */
 @Composable
 fun BubbleShell(
     modifier: Modifier = Modifier,
     isGrabbed: Boolean = false,
-    swipeProgress: () -> Float = { 0f },
-    wiggleSeed: Int = 0,
     showRimShade: Boolean = true,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
@@ -80,14 +68,24 @@ fun BubbleShell(
             modifier = Modifier
                 .fillMaxSize()
                 .aspectRatio(1f)
-                // Drop shadow rendered before the clip so it falls outside the circle's bounds
-                // instead of being cut off by it — lifts the whole bubble off the background.
-                .shadow(
-                    elevation = 7.dp,
-                    shape = CircleShape,
-                    ambientColor = VitaColors.BubbleShadow.copy(alpha = 0.55f),
-                    spotColor = VitaColors.BubbleShadow.copy(alpha = 0.55f),
-                )
+                // Soft drop shadow faked with a cached radial gradient drawn before the clip, so it
+                // falls outside the circle without the cost of a real elevation shadow per bubble.
+                .drawWithCache {
+                    val r = size.minDimension / 2f
+                    val shadowCenter = Offset(size.width / 2f, size.height / 2f + r * 0.14f)
+                    val shadowRadius = r * 1.22f
+                    val shadow = Brush.radialGradient(
+                        0f to Color.Transparent,
+                        0.78f to VitaColors.BubbleShadow.copy(alpha = 0.40f),
+                        0.88f to VitaColors.BubbleShadow.copy(alpha = 0.22f),
+                        1f to Color.Transparent,
+                        center = shadowCenter,
+                        radius = shadowRadius,
+                    )
+                    onDrawBehind {
+                        drawCircle(shadow, radius = shadowRadius, center = shadowCenter)
+                    }
+                }
                 .clip(CircleShape)
                 .then(
                     if (isGrabbed) {
@@ -158,8 +156,6 @@ fun AppBubble(
     modifier: Modifier = Modifier,
     showLabel: Boolean = true,
     isGrabbed: Boolean = false,
-    swipeProgress: () -> Float = { 0f },
-    wiggleSeed: Int = app.key.hashCode(),
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -170,8 +166,6 @@ fun AppBubble(
         BubbleShell(
             modifier = Modifier.size(size),
             isGrabbed = isGrabbed,
-            swipeProgress = swipeProgress,
-            wiggleSeed = wiggleSeed,
             onClick = onClick,
             onLongClick = onLongClick,
         ) {
@@ -206,8 +200,6 @@ fun FolderBubble(
     modifier: Modifier = Modifier,
     showLabel: Boolean = true,
     isGrabbed: Boolean = false,
-    swipeProgress: () -> Float = { 0f },
-    wiggleSeed: Int = folder.id.hashCode(),
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
 ) {
@@ -218,8 +210,6 @@ fun FolderBubble(
         BubbleShell(
             modifier = Modifier.size(size),
             isGrabbed = isGrabbed,
-            swipeProgress = swipeProgress,
-            wiggleSeed = wiggleSeed,
             showRimShade = false,
             onClick = onClick,
             onLongClick = onLongClick,

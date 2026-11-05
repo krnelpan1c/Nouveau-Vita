@@ -27,6 +27,7 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,9 +60,19 @@ import com.vitalauncher.app.ui.theme.vitaSkyBrush
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 
+private const val WINDOW_PREFS = "window_prefs"
+private const val KEY_SYSTEM_WALLPAPER = "system_wallpaper"
+
 class MainActivity : ComponentActivity() {
 
     private val viewModel: LauncherViewModel by viewModels()
+    private var earlySystemWallpaper = false
+
+    private fun applyWallpaperFlag(enabled: Boolean) {
+        if (enabled) window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+        getSharedPreferences(WINDOW_PREFS, MODE_PRIVATE).edit().putBoolean(KEY_SYSTEM_WALLPAPER, enabled).apply()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -80,12 +91,16 @@ class MainActivity : ComponentActivity() {
         }
         // Lets the system-drawn wallpaper (static image or live) show through behind our window
         // whenever the gradient background layer goes transparent for it.
-        window.addFlags(WindowManager.LayoutParams.FLAG_SHOW_WALLPAPER)
+        // Only requested while the system-wallpaper background is active (see applyWallpaperFlag):
+        // keeping it on under an opaque gradient makes the compositor render the wallpaper layer
+        // for nothing every frame. The last-used mode is cached so it's right from the first frame.
+        earlySystemWallpaper = getSharedPreferences(WINDOW_PREFS, MODE_PRIVATE).getBoolean(KEY_SYSTEM_WALLPAPER, false)
+        applyWallpaperFlag(earlySystemWallpaper)
         hideSystemBars()
 
         setContent {
             Surface(modifier = Modifier.fillMaxSize(), color = Color.Transparent) {
-                VitaLauncherRoot(viewModel)
+                VitaLauncherRoot(viewModel, earlySystemWallpaper) { applyWallpaperFlag(it) }
             }
         }
     }
@@ -271,7 +286,18 @@ private data class EditContainer(
  *  4. The status bar, always on top and never affected by anything happening beneath it.
  */
 @Composable
-private fun VitaLauncherRoot(viewModel: LauncherViewModel) {
+private fun VitaLauncherRoot(
+    viewModel: LauncherViewModel,
+    earlySystemWallpaper: Boolean,
+    onWallpaperModeChanged: (Boolean) -> Unit,
+) {
+    // Until the saved layout finishes loading, trust the cached mode so the window doesn't flash
+    // the default gradient (or black) before the real background appears.
+    val useSystemWallpaper = if (viewModel.isLoading) earlySystemWallpaper
+        else viewModel.backgroundMode == BackgroundMode.SYSTEM_WALLPAPER
+    LaunchedEffect(useSystemWallpaper, viewModel.isLoading) {
+        if (!viewModel.isLoading) onWallpaperModeChanged(useSystemWallpaper)
+    }
     var lastFolder by remember { mutableStateOf<FolderInfo?>(null) }
     LaunchedEffect(viewModel.openFolder) {
         viewModel.openFolder?.let { lastFolder = it }
@@ -312,7 +338,7 @@ private fun VitaLauncherRoot(viewModel: LauncherViewModel) {
     ) {
         // Layer 1: static background — a solid gradient theme, or transparent so the system
         // wallpaper (drawn behind our window via FLAG_SHOW_WALLPAPER) shows through instead.
-        val backgroundBrush = if (viewModel.backgroundMode == BackgroundMode.SYSTEM_WALLPAPER) {
+        val backgroundBrush = if (useSystemWallpaper) {
             null
         } else {
             vitaSkyBrush(viewModel.colorThemeIndex)
@@ -324,7 +350,13 @@ private fun VitaLauncherRoot(viewModel: LauncherViewModel) {
         )
 
         // Layer 2: home icon grid + edit-mode overview.
-        HomeScreen(viewModel, modifier = Modifier.scale(homeScale).alpha(homeAlpha))
+        HomeScreen(viewModel, modifier = Modifier.graphicsLayer {
+            // Read in the draw phase so the zoom/fade animation doesn't recompose the whole home
+            // grid on every frame.
+            scaleX = homeScale
+            scaleY = homeScale
+            alpha = homeAlpha
+        })
 
         AnimatedVisibility(
             visible = homeInEditMode,
@@ -357,7 +389,7 @@ private fun VitaLauncherRoot(viewModel: LauncherViewModel) {
                     animationSpec = tween(200),
                     label = "folderFade",
                 )
-                FolderScreen(viewModel = viewModel, folder = folder, modifier = Modifier.alpha(folderAlpha))
+                FolderScreen(viewModel = viewModel, folder = folder, modifier = Modifier.graphicsLayer { alpha = folderAlpha })
 
                 AnimatedVisibility(
                     visible = viewModel.isEditMode,

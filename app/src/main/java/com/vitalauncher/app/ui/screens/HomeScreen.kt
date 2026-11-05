@@ -33,7 +33,6 @@ private val BUBBLE_SIZE = 92.dp
 fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val pagerState = rememberPagerState(pageCount = { viewModel.pages.size })
-    val swipeProgress: () -> Float = { pagerState.currentPageOffsetFraction }
 
     // Suppresses the swipe chime on the very first composition, where currentPage "changes" from
     // nothing to the initial page rather than from an actual swipe/navigation.
@@ -76,7 +75,6 @@ fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
                         is GridItem.Entry -> AppBubble(
                             app = item.app,
                             size = BUBBLE_SIZE,
-                            swipeProgress = swipeProgress,
                             onClick = {
                                 SoundManager.notifyAppLaunched()
                                 AppRepository.launch(context, item.app)
@@ -88,7 +86,6 @@ fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
                         is GridItem.FolderEntry -> FolderBubble(
                             folder = item.folder,
                             size = BUBBLE_SIZE,
-                            swipeProgress = swipeProgress,
                             onClick = { viewModel.showFolder(item.folder, slotIndex) },
                             onLongClick = {
                                 viewModel.enterEditModeAndGrab(SlotLocation.Home(pageIndex, slotIndex))
