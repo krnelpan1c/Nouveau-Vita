@@ -1,8 +1,5 @@
 package com.vitalauncher.app.ui.components
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
@@ -19,9 +16,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.snapshotFlow
-import kotlinx.coroutines.launch
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -32,7 +26,6 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -43,12 +36,8 @@ import androidx.compose.ui.unit.sp
 import com.vitalauncher.app.model.AppInfo
 import com.vitalauncher.app.model.FolderInfo
 import com.vitalauncher.app.ui.theme.VitaColors
-import kotlin.random.Random
 import androidx.compose.foundation.Image
 
-private const val MAX_BOB_OFFSET_DP = 14f
-private const val MAX_TILT_ANGLE = 38f
-private const val TILT_CAMERA_DISTANCE = 10f
 
 /**
  * The circular "glossy sphere" shell shared by app icons and folder bubbles. Bubbles bob
@@ -58,7 +47,7 @@ private const val TILT_CAMERA_DISTANCE = 10f
  * moving to the next page (content sliding up) noses the bubbles down; swiping/moving to the
  * previous page (content sliding down) tips them up.
  *
- * @param swipeProgress the pager's current drag offset (roughly -0.5..0.5); 0 when settled.
+ * @param swipeProgress (currently unused: bob/tilt disabled to fix swipe lag) the pager's current drag offset (roughly -0.5..0.5); 0 when settled.
  */
 @Composable
 fun BubbleShell(
@@ -71,30 +60,10 @@ fun BubbleShell(
     onLongClick: (() -> Unit)? = null,
     content: @Composable BoxScope.() -> Unit,
 ) {
-    val random = remember(wiggleSeed) { Random(wiggleSeed) }
-    val magnitudeFactor = remember(wiggleSeed) { 0.7f + random.nextFloat() * 0.6f }
-    val springStiffness = remember(wiggleSeed) { 220f + random.nextFloat() * 380f }
-
-    // Spring-follow the pager's drag via Animatables read only in the graphicsLayer (draw phase),
-    // so a swipe never triggers recomposition/relayout of every bubble on every frame.
-    val bobSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = springStiffness)
-    val bob = remember { Animatable(0f) }
-    val tilt = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        snapshotFlow { swipeProgress() }.collect { p ->
-            launch { bob.animateTo(p * magnitudeFactor * MAX_BOB_OFFSET_DP, bobSpec) }
-            launch { tilt.animateTo(p * magnitudeFactor * MAX_TILT_ANGLE, bobSpec) }
-        }
-    }
     val interactionSource = remember { MutableInteractionSource() }
 
     Box(
         modifier = modifier
-            .graphicsLayer {
-                translationY = bob.value * density
-                rotationX = tilt.value
-                cameraDistance = TILT_CAMERA_DISTANCE * density
-            }
             .then(
                 if (onClick != null || onLongClick != null) {
                     Modifier.combinedClickable(
