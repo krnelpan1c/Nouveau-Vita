@@ -435,16 +435,23 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         if (grabbed == null && showFocusRing) showFocusRing = false
     }
 
-    fun clearPendingPageScroll() {
-        pendingPageScrollTo = null
+    fun clearPendingPageScroll(target: Int? = null) {
+        if (target == null || pendingPageScrollTo == target) {
+            pendingPageScrollTo = null
+        }
     }
 
-    /** Called whenever the home pager's visible page changes, whether from a manual swipe or a
-     * programmatic [pendingPageScrollTo] scroll. Keeps the D-pad cursor's page in lock-step with
-     * whatever page is actually on screen — otherwise swiping away from the cursor's page (without
-     * touching the cursor itself) leaves it stranded there, and the next D-pad press yanks the view
-     * back to that stale page instead of continuing from the one the user is currently looking at. */
-    fun onCurrentPageChanged(pageIndex: Int) {
+    /** Called whenever the home pager's visible page changes from a manual user swipe. Keeps the
+     * D-pad cursor's page in lock-step with whatever page is actually on screen — otherwise
+     * swiping away from the cursor's page (without touching the cursor itself) leaves it stranded
+     * there, and the next D-pad press yanks the view back to that stale page instead of continuing
+     * from the one the user is currently looking at.
+     *
+     * Ignored when [isProgrammatic] is true, because D-pad/drag page transitions already set
+     * [currentPageIndex] and [focusedSlot] to the exact destination and must not be clobbered by
+     * intermediate pages crossed during rapid multi-page navigation. */
+    fun onCurrentPageChanged(pageIndex: Int, isProgrammatic: Boolean = false) {
+        if (isProgrammatic) return
         currentPageIndex = pageIndex
         val current = focusedSlot
         if (current is SlotLocation.Home && current.pageIndex != pageIndex) {
@@ -525,6 +532,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                             found ?: slotAtRowAndFraction(startRow, fraction)
                         }
                         focusedSlot = SlotLocation.Home(targetPage, newSlotIndex)
+                        currentPageIndex = targetPage
                         pendingPageScrollTo = targetPage
                     }
                 } else if (grabbed != null && current is SlotLocation.InFolder) {
@@ -862,6 +870,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         grabbed = null
         focusedSlot = SlotLocation.Home(targetPage, destSlotIndex)
         showFocusRing = true
+        currentPageIndex = targetPage
         pendingPageScrollTo = targetPage
     }
 }

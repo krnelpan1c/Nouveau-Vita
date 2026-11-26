@@ -5,6 +5,7 @@ import android.os.Build
 import android.os.PerformanceHintManager
 import android.os.Process
 import java.io.File
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -23,6 +24,11 @@ object PerformanceBooster {
     private const val SCROLL_REPORT_DURATION_NS = 6_500_000L
 
     private val initializing = AtomicBoolean(false)
+
+    /** Offloads ADPF Binder IPC off the UI thread so periodic scroll ticks can never stall a frame. */
+    private val hintExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "VitaAdpfHint").apply { isDaemon = true }
+    }
 
     @Volatile
     private var hintSession: PerformanceHintManager.Session? = null
@@ -66,18 +72,18 @@ object PerformanceBooster {
     /** Signals active frame work as the launcher resumes from a backgrounded state. */
     fun boostForResume() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        try {
-            hintSession?.reportActualWorkDuration(RESUME_REPORT_DURATION_NS)
-        } catch (_: Throwable) {
+        val session = hintSession ?: return
+        hintExecutor.execute {
+            runCatching { session.reportActualWorkDuration(RESUME_REPORT_DURATION_NS) }
         }
     }
 
     /** Signals ongoing 120 Hz scroll work while a pager gesture/fling is active. */
     fun boostScrollTick() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return
-        try {
-            hintSession?.reportActualWorkDuration(SCROLL_REPORT_DURATION_NS)
-        } catch (_: Throwable) {
+        val session = hintSession ?: return
+        hintExecutor.execute {
+            runCatching { session.reportActualWorkDuration(SCROLL_REPORT_DURATION_NS) }
         }
     }
 

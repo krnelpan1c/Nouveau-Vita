@@ -4,14 +4,23 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.LauncherApps
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.BitmapShader
+import android.graphics.Canvas
+import android.graphics.Paint
+import android.graphics.Shader
+import android.graphics.drawable.Drawable
 import android.os.Process
-import androidx.core.graphics.drawable.toBitmap
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /** Queries the Android package manager for launchable apps, excluding this launcher itself. */
 object AppRepository {
+
+    private const val ICON_SIZE_PX = 192
 
     suspend fun loadLaunchableApps(context: Context): List<AppInfo> = withContext(Dispatchers.IO) {
         val pm = context.packageManager
@@ -25,7 +34,7 @@ object AppRepository {
                 val activityInfo = resolveInfo.activityInfo
                 val label = resolveInfo.loadLabel(pm).toString()
                 val iconDrawable = resolveInfo.loadIcon(pm)
-                val bitmap = iconDrawable.toBitmap(width = 192, height = 192).asImageBitmap()
+                val bitmap = toCircularImageBitmap(iconDrawable)
                 AppInfo(
                     packageName = activityInfo.packageName,
                     activityClassName = activityInfo.name,
@@ -36,6 +45,22 @@ object AppRepository {
             .distinctBy { it.key }
             .sortedBy { it.label.lowercase() }
             .plus(loadPinnedShortcuts(context))
+    }
+
+    /** Renders [drawable] into a pre-clipped anti-aliased circular [ImageBitmap] once on a worker
+     * thread, eliminating per-bubble GPU stencil/path clip operations during 120 Hz scrolling. */
+    private fun toCircularImageBitmap(drawable: Drawable, sizePx: Int = ICON_SIZE_PX): ImageBitmap {
+        val src = drawable.toBitmap(width = sizePx, height = sizePx, config = Bitmap.Config.ARGB_8888)
+        val out = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            shader = BitmapShader(src, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP)
+        }
+        val radius = sizePx / 2f
+        canvas.drawCircle(radius, radius, radius, paint)
+        src.recycle()
+        out.prepareToDraw()
+        return out.asImageBitmap()
     }
 
     /** A cheap fingerprint of what's installed/pinned right now (no icon decoding), so callers can
@@ -58,6 +83,7 @@ object AppRepository {
         }
         keys
     }
+
     /** True while we're the default home app, the only state in which Android lets us read,
      * launch or unpin shortcuts. */
     fun hasShortcutHostPermission(context: Context): Boolean = try {
@@ -85,7 +111,7 @@ object AppRepository {
                         packageName = info.`package`,
                         activityClassName = "",
                         label = label,
-                        icon = drawable.toBitmap(width = 192, height = 192).asImageBitmap(),
+                        icon = toCircularImageBitmap(drawable),
                         shortcutId = info.id,
                     )
                 }

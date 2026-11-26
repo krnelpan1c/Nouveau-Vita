@@ -20,8 +20,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.pager.VerticalPager
-import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -34,16 +32,17 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
@@ -62,7 +61,13 @@ import com.vitalauncher.app.ui.components.FOLDER_PITCH_SCALE
 import com.vitalauncher.app.ui.components.FolderBubble
 import com.vitalauncher.app.ui.components.PageGrid
 import com.vitalauncher.app.ui.components.PageIndicatorDots
+import com.vitalauncher.app.ui.components.VitaPagerState
+import com.vitalauncher.app.ui.components.VitaVerticalPager
+import com.vitalauncher.app.ui.components.rememberVitaPagerState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val EDIT_BUBBLE_SIZE = 64.dp
@@ -84,38 +89,56 @@ fun EditModeScreen(
     modifier: Modifier = Modifier,
 ) {
     val isHomeContext = allowAddPage
-    val pagerState = rememberPagerState(
+    val pagerState = rememberVitaPagerState(
         initialPage = if (isHomeContext) viewModel.currentPageIndex.coerceIn(0, (pageCount - 1).coerceAtLeast(0)) else 0,
-        pageCount = { pageCount },
+        pageCount = pageCount,
     )
 
     BackHandler(enabled = true) { viewModel.cancelGrabOrExit() }
 
-    LaunchedEffect(viewModel.pendingPageScrollTo) {
-        val target = viewModel.pendingPageScrollTo ?: return@LaunchedEffect
-        if (target in 0 until pageCount) pagerState.animateScrollToPage(target)
-        viewModel.clearPendingPageScroll()
-    }
+    LaunchedEffect(pagerState, viewModel, isHomeContext) {
+        launch {
+            snapshotFlow { viewModel.pendingPageScrollTo }
+                .collect { target ->
+                    if (target != null) {
+                        if (target in 0 until pagerState.pageCount) {
+                            pagerState.animateScrollToPage(target)
+                        }
+                        viewModel.clearPendingPageScroll(target)
+                    }
+                }
+        }
 
-    // Keeps the D-pad cursor's page glued to whatever page is actually being viewed here,
-    // including plain manual swipes the cursor itself had no part in.
-    LaunchedEffect(pagerState.currentPage) {
-        if (isHomeContext) viewModel.onCurrentPageChanged(pagerState.currentPage)
-    }
+        launch {
+            // Keeps the D-pad cursor's page glued to whatever page is actually being viewed here,
+            // including plain manual swipes the cursor itself had no part in.
+            snapshotFlow { pagerState.currentPage }
+                .distinctUntilChanged()
+                .collect { page ->
+                    if (isHomeContext) {
+                        viewModel.onCurrentPageChanged(page, isProgrammatic = pagerState.isProgrammaticScroll)
+                    }
+                }
+        }
 
-    LaunchedEffect(pagerState.isScrollInProgress) {
-        if (!pagerState.isScrollInProgress) return@LaunchedEffect
-        PerformanceBooster.boostScrollTick()
-        while (true) {
-            delay(48)
-            PerformanceBooster.boostScrollTick()
+        launch {
+            snapshotFlow { pagerState.isScrollInProgress }
+                .distinctUntilChanged()
+                .collectLatest { scrolling ->
+                    if (!scrolling) return@collectLatest
+                    PerformanceBooster.boostScrollTick()
+                    while (true) {
+                        delay(48)
+                        PerformanceBooster.boostScrollTick()
+                    }
+                }
         }
     }
 
-    // Root-coordinate center of every slot's "..." badge, keyed by location — kept continuously
-    // up to date (not just at tap time) so the context menu can pop from the right spot whether
-    // it was opened by touch or by the Y button acting on whatever the D-pad cursor highlights.
-    val badgePositions = remember { mutableStateMapOf<SlotLocation, Offset>() }
+    // Plain HashMap (not SnapshotStateMap) storing each badge's LayoutCoordinates so scrolling
+    // never triggers snapshot writes or recompositions; positionInRoot() is queried on demand only
+    // when a context menu actually opens.
+    val badgeCoords = remember { HashMap<SlotLocation, LayoutCoordinates>() }
 
     // Uses the ViewModel's own cross-context lookup rather than this container's slotAt: grabbed
     // can reference a folder item that's been pulled out onto the home overview but not dropped
@@ -146,19 +169,28 @@ fun EditModeScreen(
         }
 
         Box(modifier = panelModifier) {
-            VerticalPager(
+            VitaVerticalPager(
                 state = pagerState,
-                beyondBoundsPageCount = 1,
+                pageCount = pageCount,
+                key = { pageIndex ->
+                    if (isHomeContext) viewModel.pages.getOrNull(pageIndex)?.id ?: pageIndex else pageIndex
+                },
                 modifier = Modifier.fillMaxSize(),
             ) { pageIndex ->
                 var dragEscaped by remember { mutableStateOf(false) }
-                val focused = viewModel.focusedSlot
-                val focusedSlotIndex = if (viewModel.showFocusRing && focused != null) {
-                    (0 until SLOTS_PER_PAGE).firstOrNull { s -> locationAt(pageIndex, s) == focused }
-                } else null
+                val focusedSlotIndexProvider = remember(viewModel, pageIndex, locationAt) {
+                    {
+                        val focused = viewModel.focusedSlot
+                        if (viewModel.showFocusRing && focused != null) {
+                            (0 until SLOTS_PER_PAGE).firstOrNull { s -> locationAt(pageIndex, s) == focused }
+                        } else {
+                            null
+                        }
+                    }
+                }
                 PageGrid(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-                    focusedSlotIndex = focusedSlotIndex,
+                    focusedSlotIndexProvider = focusedSlotIndexProvider,
                     focusRingDiameter = EDIT_BUBBLE_SIZE + 2.dp,
                     liftedContent = liftedContent,
                     dragEnabled = viewModel.dragArmed,
@@ -209,17 +241,15 @@ fun EditModeScreen(
                                 viewModel.openContextMenu(location)
                             }
                         },
-                        onBadgePositioned = { pos ->
-                            if (badgePositions[location] != pos) badgePositions[location] = pos
-                        },
+                        onBadgeCoordinates = { coords -> badgeCoords[location] = coords },
                     )
                 }
             }
 
             if (pageCount > 1) {
-                PageIndicatorDots(
-                    count = pageCount,
-                    current = pagerState.currentPage,
+                EditPageIndicator(
+                    pagerState = pagerState,
+                    pageCount = pageCount,
                     modifier = Modifier
                         .align(Alignment.CenterStart)
                         .padding(start = 6.dp),
@@ -289,14 +319,25 @@ fun EditModeScreen(
             onMenu = { viewModel.onYButtonPressed() },
         )
 
-        // Retains the menu's location through its exit animation: contextMenuFor already goes
-        // null the instant a dismiss/action fires, and the content below needs a moment longer.
+        // Retains the menu's location and computed anchor through its exit animation: contextMenuFor
+        // goes null the instant a dismiss/action fires, and the content below needs a moment longer.
         var lastMenuLocation by remember { mutableStateOf<SlotLocation?>(null) }
-        LaunchedEffect(viewModel.contextMenuFor) {
-            viewModel.contextMenuFor?.let { lastMenuLocation = it }
+        var lastMenuAnchor by remember { mutableStateOf<Offset?>(null) }
+        val activeMenuLocation = viewModel.contextMenuFor
+        LaunchedEffect(activeMenuLocation) {
+            if (activeMenuLocation != null) {
+                lastMenuLocation = activeMenuLocation
+                val coords = badgeCoords[activeMenuLocation]
+                lastMenuAnchor = if (coords != null && coords.isAttached) {
+                    val topLeft = coords.positionInRoot()
+                    topLeft + Offset(coords.size.width / 2f, coords.size.height / 2f)
+                } else {
+                    null
+                }
+            }
         }
 
-        if (viewModel.contextMenuFor != null) {
+        if (activeMenuLocation != null) {
             val dismissInteractionSource = remember { MutableInteractionSource() }
             Box(
                 modifier = Modifier
@@ -312,9 +353,19 @@ fun EditModeScreen(
         // corner (rather than its top-left) at the badge, since that's the corner it visually
         // grows from.
         val menuWidthPx = with(density) { 180.dp.roundToPx() }
-        val menuAnchor = lastMenuLocation?.let { badgePositions[it] }
+        val menuAnchor = if (activeMenuLocation != null) {
+            val coords = badgeCoords[activeMenuLocation]
+            if (coords != null && coords.isAttached) {
+                val topLeft = coords.positionInRoot()
+                topLeft + Offset(coords.size.width / 2f, coords.size.height / 2f)
+            } else {
+                lastMenuAnchor
+            }
+        } else {
+            lastMenuAnchor
+        }
         AnimatedVisibility(
-            visible = viewModel.contextMenuFor != null,
+            visible = activeMenuLocation != null,
             enter = fadeIn(tween(120)) + scaleIn(
                 initialScale = 0.15f,
                 transformOrigin = TransformOrigin(1f, 0f),
@@ -361,6 +412,15 @@ fun EditModeScreen(
     }
 }
 
+@Composable
+private fun EditPageIndicator(pagerState: VitaPagerState, pageCount: Int, modifier: Modifier = Modifier) {
+    PageIndicatorDots(
+        count = pageCount,
+        current = pagerState.currentPage,
+        modifier = modifier,
+    )
+}
+
 /**
  * A single edit-mode bubble. Deliberately has NO fixed outer size: it's sized by its dominant
  * child (the bubble itself, exactly [EDIT_BUBBLE_SIZE]) so the tracked bounds [PageGrid] uses for
@@ -374,7 +434,7 @@ private fun EditableSlot(
     isGrabbed: Boolean,
     onBodyClick: () -> Unit,
     onMenuClick: () -> Unit,
-    onBadgePositioned: (Offset) -> Unit,
+    onBadgeCoordinates: (LayoutCoordinates) -> Unit,
 ) {
     Box {
         if (isGrabbed) {
@@ -413,10 +473,7 @@ private fun EditableSlot(
                     .align(Alignment.TopEnd)
                     .offset(x = 8.dp, y = (-8).dp)
                     .size(22.dp)
-                    .onGloballyPositioned { coords ->
-                        val topLeft = coords.positionInRoot()
-                        onBadgePositioned(topLeft + Offset(coords.size.width / 2f, coords.size.height / 2f))
-                    }
+                    .onGloballyPositioned(onBadgeCoordinates)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = 0.9f))
                     .clickable(onClick = onMenuClick),

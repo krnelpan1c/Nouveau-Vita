@@ -1,6 +1,12 @@
 package com.vitalauncher.app.ui.components
 
-import androidx.compose.foundation.background
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.LinearGradient
+import android.graphics.Paint
+import android.graphics.RadialGradient
+import android.graphics.Shader
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -16,27 +22,148 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithCache
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vitalauncher.app.model.AppInfo
 import com.vitalauncher.app.model.FolderInfo
 import com.vitalauncher.app.ui.theme.VitaColors
-import androidx.compose.foundation.Image
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
+/**
+ * Process-wide cache of pre-rendered bubble drop shadows and circular glass-sphere gloss overlays,
+ * keyed by pixel diameter. Every bubble on screen shares the exact same 2–3 cached bitmaps,
+ * replacing 5 per-bubble Skia gradient shader passes (100 shaders during a 2-page swipe) with
+ * two lightweight GPU texture blits.
+ */
+private object BubbleOverlayCache {
+    class CachedShadow(val bitmap: ImageBitmap, val padPx: Int)
+
+    private val shadows = ConcurrentHashMap<Int, CachedShadow>()
+    private val glossWithRim = ConcurrentHashMap<Int, ImageBitmap>()
+    private val glossWithoutRim = ConcurrentHashMap<Int, ImageBitmap>()
+
+    fun shadow(sizePx: Int): CachedShadow = shadows.getOrPut(sizePx) { buildShadow(sizePx) }
+
+    fun gloss(sizePx: Int, showRimShade: Boolean): ImageBitmap {
+        val map = if (showRimShade) glossWithRim else glossWithoutRim
+        return map.getOrPut(sizePx) { buildGloss(sizePx, showRimShade) }
+    }
+
+    private fun buildShadow(sizePx: Int): CachedShadow {
+        val r = sizePx / 2f
+        val pad = ceil(r * 0.40f).toInt().coerceAtLeast(1)
+        val dim = sizePx + pad * 2
+        val bmp = Bitmap.createBitmap(dim, dim, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val cx = pad + r
+        val cy = pad + r + r * 0.14f
+        val shadowRadius = (r * 1.22f).coerceAtLeast(1f)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = RadialGradient(
+                cx,
+                cy,
+                shadowRadius,
+                intArrayOf(
+                    0x00000000,
+                    VitaColors.BubbleShadow.copy(alpha = 0.40f).toArgb(),
+                    VitaColors.BubbleShadow.copy(alpha = 0.22f).toArgb(),
+                    0x00000000,
+                ),
+                floatArrayOf(0f, 0.78f, 0.88f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+        }
+        canvas.drawCircle(cx, cy, shadowRadius, paint)
+        bmp.prepareToDraw()
+        return CachedShadow(bmp.asImageBitmap(), pad)
+    }
+
+    private fun buildGloss(sizePx: Int, showRimShade: Boolean): ImageBitmap {
+        val bmp = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val w = sizePx.toFloat()
+        val h = sizePx.toFloat()
+        val minDim = sizePx.toFloat()
+        val cx = w * 0.5f
+        val cy = h * 0.5f
+        val radius = minDim * 0.5f
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+
+        // Draw each glass-sphere gradient directly as an anti-aliased circle so shading and shine
+        // are strictly bounded to the bubble silhouette with zero corner bleed.
+        if (showRimShade) {
+            paint.shader = RadialGradient(
+                cx,
+                cy,
+                (minDim * 0.52f).coerceAtLeast(1f),
+                intArrayOf(
+                    0x00000000,
+                    0x00000000,
+                    VitaColors.BubbleShadow.copy(alpha = 0.28f).toArgb(),
+                ),
+                floatArrayOf(0f, 0.72f, 1f),
+                Shader.TileMode.CLAMP,
+            )
+            canvas.drawCircle(cx, cy, radius, paint)
+        }
+
+        paint.shader = LinearGradient(
+            0f,
+            h * 0.45f,
+            0f,
+            h,
+            0x00000000,
+            VitaColors.BubbleShadow.copy(alpha = 0.18f).toArgb(),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(cx, cy, radius, paint)
+
+        paint.shader = RadialGradient(
+            w * 0.32f,
+            h * 0.26f,
+            (minDim * 0.42f).coerceAtLeast(1f),
+            intArrayOf(
+                VitaColors.BubbleHighlight.copy(alpha = 0.9f).toArgb(),
+                VitaColors.BubbleHighlight.copy(alpha = 0.32f).toArgb(),
+                0x00FFFFFF,
+            ),
+            floatArrayOf(0f, 0.35f, 1f),
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(cx, cy, radius, paint)
+
+        paint.shader = RadialGradient(
+            w * 0.25f,
+            h * 0.19f,
+            (minDim * 0.16f).coerceAtLeast(1f),
+            VitaColors.BubbleHighlight.copy(alpha = 0.95f).toArgb(),
+            0x00FFFFFF,
+            Shader.TileMode.CLAMP,
+        )
+        canvas.drawCircle(cx, cy, radius, paint)
+
+        bmp.prepareToDraw()
+        return bmp.asImageBitmap()
+    }
+}
 
 /** The circular "glossy sphere" shell shared by app icons and folder bubbles. */
 @Composable
@@ -68,25 +195,25 @@ fun BubbleShell(
             modifier = Modifier
                 .fillMaxSize()
                 .aspectRatio(1f)
-                // Soft drop shadow faked with a cached radial gradient drawn before the clip, so it
-                // falls outside the circle without the cost of a real elevation shadow per bubble.
-                .drawWithCache {
-                    val r = size.minDimension / 2f
-                    val shadowCenter = Offset(size.width / 2f, size.height / 2f + r * 0.14f)
-                    val shadowRadius = r * 1.22f
-                    val shadow = Brush.radialGradient(
-                        0f to Color.Transparent,
-                        0.78f to VitaColors.BubbleShadow.copy(alpha = 0.40f),
-                        0.88f to VitaColors.BubbleShadow.copy(alpha = 0.22f),
-                        1f to Color.Transparent,
-                        center = shadowCenter,
-                        radius = shadowRadius,
-                    )
-                    onDrawBehind {
-                        drawCircle(shadow, radius = shadowRadius, center = shadowCenter)
+                .drawWithContent {
+                    val sizePx = size.minDimension.roundToInt()
+                    if (sizePx > 0) {
+                        val cachedShadow = BubbleOverlayCache.shadow(sizePx)
+                        drawImage(
+                            image = cachedShadow.bitmap,
+                            dstOffset = IntOffset(-cachedShadow.padPx, -cachedShadow.padPx),
+                            dstSize = IntSize(cachedShadow.bitmap.width, cachedShadow.bitmap.height),
+                        )
+                    }
+                    drawContent()
+                    if (sizePx > 0) {
+                        val cachedGloss = BubbleOverlayCache.gloss(sizePx, showRimShade)
+                        drawImage(
+                            image = cachedGloss,
+                            dstSize = IntSize(sizePx, sizePx),
+                        )
                     }
                 }
-                .clip(CircleShape)
                 .then(
                     if (isGrabbed) {
                         Modifier.border(3.dp, VitaColors.GrabbedRing, CircleShape)
@@ -94,57 +221,6 @@ fun BubbleShell(
                 ),
         ) {
             content()
-            // Glass-sphere shading, sized off the actual draw bounds (rather than a fixed pixel
-            // radius) so it reads correctly at every bubble size the app uses. Layered darkest to
-            // brightest so each later gradient lightens over the one below it: a rim/base shadow
-            // for roundness, then a broad soft sheen, then a small crisp glint for the "glossy"
-            // pinpoint reflection real glass/plastic spheres show.
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .drawWithCache {
-                        val w = size.width
-                        val h = size.height
-                        val minDim = size.minDimension
-
-                        // Held off (transparent) until 72% of the radius so it only darkens the
-                        // rim itself, not the icon underneath it. Skipped for folder bubbles,
-                        // whose 2x2 icon preview already reaches close to the rim on its own.
-                        val rimShade = Brush.radialGradient(
-                            0f to Color.Transparent,
-                            0.72f to Color.Transparent,
-                            1f to VitaColors.BubbleShadow.copy(alpha = 0.28f),
-                            center = Offset(w * 0.5f, h * 0.5f),
-                            radius = minDim * 0.52f,
-                        )
-                        val baseShade = Brush.verticalGradient(
-                            colors = listOf(Color.Transparent, VitaColors.BubbleShadow.copy(alpha = 0.18f)),
-                            startY = h * 0.45f,
-                            endY = h,
-                        )
-                        // Tighter radius + a hot center held further before falling off, for a
-                        // more concentrated, glossier-looking sheen.
-                        val sheen = Brush.radialGradient(
-                            0f to VitaColors.BubbleHighlight.copy(alpha = 0.9f),
-                            0.35f to VitaColors.BubbleHighlight.copy(alpha = 0.32f),
-                            1f to Color.Transparent,
-                            center = Offset(w * 0.32f, h * 0.26f),
-                            radius = minDim * 0.42f,
-                        )
-                        val glint = Brush.radialGradient(
-                            colors = listOf(VitaColors.BubbleHighlight.copy(alpha = 0.95f), Color.Transparent),
-                            center = Offset(w * 0.25f, h * 0.19f),
-                            radius = minDim * 0.16f,
-                        )
-
-                        onDrawBehind {
-                            if (showRimShade) drawRect(rimShade)
-                            drawRect(baseShade)
-                            drawRect(sheen)
-                            drawRect(glint)
-                        }
-                    },
-            )
         }
     }
 }
@@ -217,7 +293,9 @@ fun FolderBubble(
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.White.copy(alpha = 0.12f)),
+                    .drawBehind {
+                        drawCircle(color = Color.White.copy(alpha = 0.12f))
+                    },
             )
             FolderPreviewGrid(folder = folder, modifier = Modifier.fillMaxSize().padding(size * 0.14f))
         }
@@ -253,8 +331,7 @@ private fun FolderPreviewGrid(folder: FolderInfo, modifier: Modifier = Modifier)
                     .size(cell)
                     .padding(1.dp)
                     .align(Alignment.TopStart)
-                    .offset(x = cell * col, y = cell * row)
-                    .clip(CircleShape),
+                    .offset(x = cell * col, y = cell * row),
             ) {
                 Image(
                     bitmap = app.icon,

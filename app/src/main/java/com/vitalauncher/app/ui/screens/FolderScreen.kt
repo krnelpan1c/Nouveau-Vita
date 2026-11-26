@@ -108,13 +108,19 @@ fun FolderScreen(viewModel: LauncherViewModel, folder: FolderInfo, modifier: Mod
                         },
                 )
             }
-            val focused = viewModel.focusedSlot
-            val focusedSlotIndex = if (viewModel.showFocusRing && focused is SlotLocation.InFolder && focused.folderId == folder.id) {
-                focused.slotIndex
-            } else null
+            val focusedSlotIndexProvider = remember(viewModel, folder.id) {
+                {
+                    val focused = viewModel.focusedSlot
+                    if (viewModel.showFocusRing && focused is SlotLocation.InFolder && focused.folderId == folder.id) {
+                        focused.slotIndex
+                    } else {
+                        null
+                    }
+                }
+            }
             PageGrid(
                 modifier = Modifier.padding(horizontal = 24.dp),
-                focusedSlotIndex = focusedSlotIndex,
+                focusedSlotIndexProvider = focusedSlotIndexProvider,
                 focusRingDiameter = 94.dp,
                 horizontalPitchScale = FOLDER_PITCH_SCALE,
             ) { slotIndex ->

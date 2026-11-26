@@ -8,10 +8,10 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -21,13 +21,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.Placeable
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.vitalauncher.app.model.ROW_SLOT_COUNTS
 import com.vitalauncher.app.ui.theme.VitaColors
@@ -36,6 +36,11 @@ import kotlin.math.roundToInt
 /** Horizontal pitch scale for [PageGrid] instances showing a folder's contents — tighter than the
  * home screen's so icons don't spread across the whole width of the giant zoomed-in bubble. */
 const val FOLDER_PITCH_SCALE = 0.85f
+
+private val CURSOR_SPRING = spring<Float>(
+    dampingRatio = Spring.DampingRatioLowBouncy,
+    stiffness = Spring.StiffnessMediumLow,
+)
 
 private class SlotBounds(
     var left: Float = 0f,
@@ -51,21 +56,14 @@ private class SlotBounds(
  * icons to fill the full width — so the 3-icon rows sit at the same spacing as the 4-icon row,
  * just centered with fewer of them.
  *
- * When [focusedSlotIndex] is non-null, a glowing cyan ring the size of [focusRingDiameter]
- * glides smoothly to that slot's bubble instead of snapping to it, for D-pad/gamepad navigation.
- * If [liftedContent] is also given, it rides along on top of that same ring — the "picked up"
- * bubble following the cursor, whether the pickup came from a gamepad lift or a touch drag.
- *
- * When [dragEnabled], press-and-hold-then-drag is recognized on every slot: [onSlotDragStart]
- * fires once the hold registers, [onSlotDragHover] fires with the slot currently under the
- * finger (or null once the drag strays far enough to count as "off the grid"), and
- * [onSlotDragEnd] fires on release/cancel with which vertical edge (if any) the drag ended
- * beyond: -1 above this grid, +1 below it, 0 if it ended on/near the grid itself.
+ * Focus state is read lazily inside a sibling [PageFocusOverlay] via [focusedSlotIndexProvider] so
+ * moving the D-pad cursor (including across page boundaries) never recomposes or re-lays out the
+ * grid's slots or app bubbles.
  */
 @Composable
 fun PageGrid(
     modifier: Modifier = Modifier,
-    focusedSlotIndex: Int? = null,
+    focusedSlotIndexProvider: () -> Int? = { null },
     focusRingDiameter: Dp = 92.dp,
     liftedContent: (@Composable () -> Unit)? = null,
     dragEnabled: Boolean = false,
@@ -80,10 +78,10 @@ fun PageGrid(
     val density = LocalDensity.current
     val totalSlots = ROW_SLOT_COUNTS.sum()
     val maxRowCount = ROW_SLOT_COUNTS.max()
-    val escapeThresholdPx = with(density) { 130.dp.toPx() }
+    val escapeThresholdPx = remember(density) { with(density) { 130.dp.toPx() } }
 
     // Stored in grid-local coordinates and updated only during actual layout passes — never via
-    // onGloballyPositioned — so 120 Hz VerticalPager scrolling triggers zero position callbacks or
+    // onGloballyPositioned — so 120 Hz pager scrolling triggers zero position callbacks or
     // SnapshotStateMap mutations.
     val slotBounds = remember(totalSlots) { Array(totalSlots) { SlotBounds() } }
     var gridHeightPx by remember { mutableFloatStateOf(0f) }
@@ -217,32 +215,64 @@ fun PageGrid(
             }
         }
 
-        if (focusedSlotIndex != null && focusedSlotIndex in slotBounds.indices) {
-            // Read geometryVersion only while a focus ring is active so initial layout triggers placement.
-            val _v = geometryVersion
-            val b = slotBounds[focusedSlotIndex]
-            if (b.valid && _v >= 0) {
-                val diameterPx = with(density) { focusRingDiameter.toPx() }
-                val ringLeft = b.left + b.width / 2f - diameterPx / 2f
-                val ringTop = b.top
-                FocusCursor(left = ringLeft, top = ringTop, diameterPx = diameterPx, liftedContent = liftedContent)
-            }
-        }
+        PageFocusOverlay(
+            focusedSlotIndexProvider = focusedSlotIndexProvider,
+            slotBounds = slotBounds,
+            geometryVersionProvider = { geometryVersion },
+            focusRingDiameter = focusRingDiameter,
+            liftedContent = liftedContent,
+        )
     }
 }
 
 @Composable
-private fun FocusCursor(left: Float, top: Float, diameterPx: Float, liftedContent: (@Composable () -> Unit)?) {
+private fun PageFocusOverlay(
+    focusedSlotIndexProvider: () -> Int?,
+    slotBounds: Array<SlotBounds>,
+    geometryVersionProvider: () -> Int,
+    focusRingDiameter: Dp,
+    liftedContent: (@Composable () -> Unit)?,
+) {
+    val focusedSlotIndex by remember(focusedSlotIndexProvider) {
+        derivedStateOf { focusedSlotIndexProvider() }
+    }
+    val idx = focusedSlotIndex ?: return
+    if (idx !in slotBounds.indices) return
+
+    // Read geometryVersion only while this page actually hosts the focus ring.
+    val version = geometryVersionProvider()
+    val b = slotBounds[idx]
+    if (!b.valid || version < 0) return
+
     val density = LocalDensity.current
-    val spec = spring<Float>(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMediumLow)
-    val animatedLeft by animateFloatAsState(left, spec, label = "cursorX")
-    val animatedTop by animateFloatAsState(top, spec, label = "cursorY")
-    val animatedDiameter by animateFloatAsState(diameterPx, spec, label = "cursorD")
+    val diameterPx = with(density) { focusRingDiameter.toPx() }
+    val ringLeft = b.left + b.width / 2f - diameterPx / 2f
+    val ringTop = b.top
+    FocusCursor(
+        left = ringLeft,
+        top = ringTop,
+        diameter = focusRingDiameter,
+        liftedContent = liftedContent,
+    )
+}
+
+@Composable
+private fun FocusCursor(
+    left: Float,
+    top: Float,
+    diameter: Dp,
+    liftedContent: (@Composable () -> Unit)?,
+) {
+    val animatedLeft = animateFloatAsState(left, CURSOR_SPRING, label = "cursorX")
+    val animatedTop = animateFloatAsState(top, CURSOR_SPRING, label = "cursorY")
 
     Box(
         modifier = Modifier
-            .offset { IntOffset(animatedLeft.roundToInt(), animatedTop.roundToInt()) }
-            .size(with(density) { animatedDiameter.toDp() }),
+            .graphicsLayer {
+                translationX = animatedLeft.value
+                translationY = animatedTop.value
+            }
+            .size(diameter),
     ) {
         Box(
             modifier = Modifier

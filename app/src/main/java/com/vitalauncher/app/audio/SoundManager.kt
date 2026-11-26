@@ -8,6 +8,7 @@ import android.media.SoundPool
 import android.net.Uri
 import com.vitalauncher.app.R
 import java.io.File
+import java.util.concurrent.Executors
 
 /**
  * All of the launcher's sound effects and background music, as one process-wide singleton — a
@@ -21,6 +22,12 @@ object SoundManager {
 
     private var soundPool: SoundPool? = null
     private var menuMusic: MediaPlayer? = null
+
+    /** Dedicated daemon worker for SoundPool.play() so AudioFlinger/JNI lock contention never
+     * stalls a 120 Hz UI frame when crossing page boundaries mid-swipe. */
+    private val sfxExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "VitaSfxDispatch").apply { isDaemon = true }
+    }
 
     private var editModeId = 0
     private var exitEditModeId = 0
@@ -215,6 +222,10 @@ object SoundManager {
 
     private fun play(soundId: Int) {
         if (soundId == 0) return
-        soundPool?.play(soundId, sfxVolume, sfxVolume, 1, 0, 1f)
+        val pool = soundPool ?: return
+        val vol = sfxVolume
+        sfxExecutor.execute {
+            runCatching { pool.play(soundId, vol, vol, 1, 0, 1f) }
+        }
     }
 }
