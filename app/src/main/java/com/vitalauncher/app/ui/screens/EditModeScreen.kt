@@ -59,6 +59,7 @@ import com.vitalauncher.app.ui.components.AppBubble
 import com.vitalauncher.app.ui.components.BubbleContextMenu
 import com.vitalauncher.app.ui.components.FOLDER_PITCH_SCALE
 import com.vitalauncher.app.ui.components.FolderBubble
+import com.vitalauncher.app.ui.components.LiftedBubbleState
 import com.vitalauncher.app.ui.components.PageGrid
 import com.vitalauncher.app.ui.components.PageIndicatorDots
 import com.vitalauncher.app.ui.components.VitaPagerState
@@ -140,19 +141,6 @@ fun EditModeScreen(
     // when a context menu actually opens.
     val badgeCoords = remember { HashMap<SlotLocation, LayoutCoordinates>() }
 
-    // Uses the ViewModel's own cross-context lookup rather than this container's slotAt: grabbed
-    // can reference a folder item that's been pulled out onto the home overview but not dropped
-    // yet, in which case it's a different context than the one currently on screen here.
-    val grabbedItem = viewModel.grabbed?.let { viewModel.itemAt(it) }
-    val liftedContent: (@Composable () -> Unit)? = grabbedItem?.let { item ->
-        {
-            when (item) {
-                is GridItem.Entry -> AppBubble(app = item.app, size = EDIT_BUBBLE_SIZE, showLabel = false)
-                is GridItem.FolderEntry -> FolderBubble(folder = item.folder, size = EDIT_BUBBLE_SIZE, showLabel = false)
-            }
-        }
-    }
-
     Box(modifier = modifier.fillMaxSize()) {
         val panelModifier = if (isHomeContext) {
             // Deliberately no background fill here: the real home background (gradient theme or
@@ -188,11 +176,56 @@ fun EditModeScreen(
                         }
                     }
                 }
+                val liftedBubbleStateProvider = remember(viewModel, pageIndex, locationAt) {
+                    {
+                        val drop = viewModel.pendingDrop
+                        if (drop != null) {
+                            val targetIdx = (0 until SLOTS_PER_PAGE).firstOrNull { s ->
+                                locationAt(pageIndex, s) == drop.target
+                            }
+                            targetIdx?.let { idx ->
+                                LiftedBubbleState(
+                                    sessionKey = drop.sessionId,
+                                    targetSlotIndex = idx,
+                                    isDropping = true,
+                                    dropId = drop.id,
+                                    content = { LiftedBubbleVisual(drop.item) },
+                                )
+                            }
+                        } else {
+                            val grabbedLoc = viewModel.grabbed
+                            val item = grabbedLoc?.let { viewModel.itemAt(it) }
+                            if (grabbedLoc != null && item != null) {
+                                val visualLoc = if (viewModel.showFocusRing && viewModel.focusedSlot != null) {
+                                    viewModel.focusedSlot!!
+                                } else {
+                                    grabbedLoc
+                                }
+                                val visualIdx = (0 until SLOTS_PER_PAGE).firstOrNull { s ->
+                                    locationAt(pageIndex, s) == visualLoc
+                                }
+                                visualIdx?.let { idx ->
+                                    LiftedBubbleState(
+                                        sessionKey = viewModel.grabSessionId,
+                                        targetSlotIndex = idx,
+                                        isDropping = false,
+                                        dropId = null,
+                                        content = { LiftedBubbleVisual(item) },
+                                    )
+                                }
+                            } else {
+                                null
+                            }
+                        }
+                    }
+                }
                 PageGrid(
                     modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
                     focusedSlotIndexProvider = focusedSlotIndexProvider,
                     focusRingDiameter = EDIT_BUBBLE_SIZE + 2.dp,
-                    liftedContent = liftedContent,
+                    liftedBubbleStateProvider = liftedBubbleStateProvider,
+                    liftedBubbleSize = EDIT_BUBBLE_SIZE,
+                    onDropAnimationFinished = { dropId -> viewModel.finalizePendingDrop(dropId) },
                     dragEnabled = viewModel.dragArmed,
                     horizontalPitchScale = if (isHomeContext) 1f else FOLDER_PITCH_SCALE,
                     onSlotDragStart = { slotIndex -> viewModel.grabForDrag(locationAt(pageIndex, slotIndex)) },
@@ -215,7 +248,7 @@ fun EditModeScreen(
                 ) { slotIndex ->
                     val location = locationAt(pageIndex, slotIndex)
                     val item = slotAt(pageIndex, slotIndex)
-                    val isGrabbed = viewModel.grabbed == location
+                    val isGrabbed = viewModel.grabbed == location || viewModel.pendingDrop?.source == location
                     EditableSlot(
                         item = item,
                         isGrabbed = isGrabbed,
@@ -224,13 +257,15 @@ fun EditModeScreen(
                         // the first place, and it must not be mistaken for a fresh tap.
                         onBodyClick = {
                             if (!viewModel.dragArmed) return@EditableSlot
+                            viewModel.finalizePendingDrop()
                             // Nothing being carried and this is a folder: open it (same as a
                             // plain-home tap) instead of grabbing it — grabbing a folder to
                             // reposition it is still available via drag or the D-pad's Move
                             // button. With something already grabbed, tapping a folder should
                             // still drop/merge into it as usual.
-                            if (viewModel.grabbed == null && item is GridItem.FolderEntry) {
-                                viewModel.showFolder(item.folder, slotIndex)
+                            val currentItem = slotAt(pageIndex, slotIndex)
+                            if (viewModel.grabbed == null && currentItem is GridItem.FolderEntry) {
+                                viewModel.showFolder(currentItem.folder, slotIndex)
                             } else {
                                 viewModel.onSlotTapped(location)
                             }
@@ -409,6 +444,14 @@ fun EditModeScreen(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun LiftedBubbleVisual(item: GridItem) {
+    when (item) {
+        is GridItem.Entry -> AppBubble(app = item.app, size = EDIT_BUBBLE_SIZE, showLabel = false)
+        is GridItem.FolderEntry -> FolderBubble(folder = item.folder, size = EDIT_BUBBLE_SIZE, showLabel = false)
     }
 }
 

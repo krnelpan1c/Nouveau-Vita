@@ -19,10 +19,23 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.vitalauncher.app.model.ROW_SLOT_COUNTS
+
+// Exact layout metrics of HomeScreen and EditModeScreen's home PageGrid so the folder zoom circle
+// aligns pixel-for-pixel with every slot (center and outer edges) on both open and close.
+private val HOME_GRID_H_PAD = 24.dp
+private val HOME_BUBBLE_RADIUS = 46.dp
+// FolderBubble has a 4.dp gap + 16.dp label beneath the circle; its circle center sits half that
+// (10.dp) above the centered Column's vertical midpoint.
+private val HOME_LABEL_HALF_OFFSET = 10.dp
+
+private val EDIT_GRID_H_PAD = 48.dp // 28.dp panel margin + 20.dp PageGrid padding
+private val EDIT_GRID_V_PAD = 56.dp // 40.dp panel margin + 16.dp PageGrid padding
+private val EDIT_BUBBLE_RADIUS = 32.dp
 
 /**
  * The "zoom into the folder" backdrop: a single giant glossy bubble — shaded just like a normal
- * app bubble — that grows from the tapped icon's position and size out to a sphere far bigger
+ * app bubble — that grows from the tapped icon's exact position and size out to a sphere far bigger
  * than the screen, so only its curved, glowing rim remains visible peeking in at the edges (the
  * Vita's own folder-open look). Folder [content] fades in on top of it, unclipped, once the
  * bubble has grown large enough to cover the screen.
@@ -30,7 +43,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun FolderZoomLayer(
     visible: Boolean,
-    originFraction: Pair<Float, Float>,
+    originSlotIndex: Int,
+    isEditMode: Boolean,
     modifier: Modifier = Modifier,
     content: @Composable () -> Unit,
 ) {
@@ -50,12 +64,31 @@ fun FolderZoomLayer(
 
     if (!shouldCompose && progress.value <= 0f) return
 
-    val startRadiusPx = with(density) { 46.dp.toPx() }
+    val hPadPx = with(density) { (if (isEditMode) EDIT_GRID_H_PAD else HOME_GRID_H_PAD).toPx() }
+    val topPadPx = with(density) { (if (isEditMode) EDIT_GRID_V_PAD else STATUS_BAR_HEIGHT).toPx() }
+    val bottomPadPx = with(density) { (if (isEditMode) EDIT_GRID_V_PAD else 0.dp).toPx() }
+    val labelOffsetPx = with(density) { (if (isEditMode) 0.dp else HOME_LABEL_HALF_OFFSET).toPx() }
+    val startRadiusPx = with(density) { (if (isEditMode) EDIT_BUBBLE_RADIUS else HOME_BUBBLE_RADIUS).toPx() }
+
+    val (row, posInRow) = rowAndPosInRow(originSlotIndex)
+    val rowCount = ROW_SLOT_COUNTS[row]
+    val rowTotal = ROW_SLOT_COUNTS.size
+    val maxRowCount = ROW_SLOT_COUNTS.max()
 
     Box(modifier = modifier.fillMaxSize()) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             val t = progress.value
-            val startCenter = Offset(size.width * originFraction.first, size.height * originFraction.second)
+            val gridWidth = (size.width - hPadPx * 2f).coerceAtLeast(1f)
+            val gridHeight = (size.height - topPadPx - bottomPadPx).coerceAtLeast(1f)
+            val pitch = gridWidth / maxRowCount
+            val bandTop = (row * gridHeight) / rowTotal
+            val bandBottom = ((row + 1) * gridHeight) / rowTotal
+            val bandCenterY = (bandTop + bandBottom) / 2f
+
+            val startCenter = Offset(
+                x = size.width / 2f + (posInRow - (rowCount - 1) / 2f) * pitch,
+                y = topPadPx + bandCenterY - labelOffsetPx,
+            )
             val endCenter = Offset(size.width * 0.5f, size.height * 0.5f)
             val center = Offset(
                 startCenter.x + (endCenter.x - startCenter.x) * t,
@@ -90,4 +123,14 @@ fun FolderZoomLayer(
             content()
         }
     }
+}
+
+private fun rowAndPosInRow(slotIndex: Int): Pair<Int, Int> {
+    var remaining = slotIndex.coerceAtLeast(0)
+    ROW_SLOT_COUNTS.forEachIndexed { row, count ->
+        if (remaining < count) return row to remaining
+        remaining -= count
+    }
+    val lastRow = ROW_SLOT_COUNTS.lastIndex
+    return lastRow to (ROW_SLOT_COUNTS[lastRow] - 1)
 }

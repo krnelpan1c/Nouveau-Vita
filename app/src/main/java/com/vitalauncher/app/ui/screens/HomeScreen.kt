@@ -1,6 +1,5 @@
 package com.vitalauncher.app.ui.screens
 
-import android.content.Context
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -13,12 +12,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.vitalauncher.app.LauncherViewModel
 import com.vitalauncher.app.PerformanceBooster
 import com.vitalauncher.app.audio.SoundManager
-import com.vitalauncher.app.model.AppRepository
 import com.vitalauncher.app.model.GridItem
 import com.vitalauncher.app.model.Page
 import com.vitalauncher.app.model.SlotLocation
@@ -40,7 +37,6 @@ private val BUBBLE_SIZE = 92.dp
 
 @Composable
 fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
-    val appContext = LocalContext.current.applicationContext
     val pageCount = viewModel.pages.size
     val pagerState = rememberVitaPagerState(initialPage = 0, pageCount = pageCount)
 
@@ -111,7 +107,6 @@ fun HomeScreen(viewModel: LauncherViewModel, modifier: Modifier = Modifier) {
                 page = page,
                 pageIndex = pageIndex,
                 viewModel = viewModel,
-                appContext = appContext,
             )
         }
         HomePageIndicator(
@@ -129,7 +124,6 @@ private fun HomePageContent(
     page: Page,
     pageIndex: Int,
     viewModel: LauncherViewModel,
-    appContext: Context,
 ) {
     val focusedSlotIndexProvider = remember(viewModel, pageIndex) {
         {
@@ -150,11 +144,8 @@ private fun HomePageContent(
         when (val item = page.slots.getOrNull(slotIndex)) {
             is GridItem.Entry -> {
                 val app = item.app
-                val onClick = remember(app, appContext) {
-                    {
-                        SoundManager.notifyAppLaunched()
-                        AppRepository.launch(appContext, app)
-                    }
+                val onClick = remember(viewModel, app) {
+                    { viewModel.launchApp(app) }
                 }
                 val onLongClick = remember(viewModel, pageIndex, slotIndex) {
                     {

@@ -25,10 +25,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,13 +35,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.compose.runtime.Composable
 import com.vitalauncher.app.audio.SoundManager
 import com.vitalauncher.app.model.BackgroundMode
 import com.vitalauncher.app.model.FolderInfo
@@ -130,7 +130,9 @@ class MainActivity : ComponentActivity() {
         // there's no manifest broadcast receiver for package changes; see
         // LauncherViewModel.syncInstalledApps.
         viewModel.syncInstalledApps()
+        viewModel.refreshRecentApps()
     }
+
     override fun onPause() {
         super.onPause()
         // A launcher is "backgrounded" every time any other app opens, so this is the reliable
@@ -392,7 +394,8 @@ private fun VitaLauncherRoot(
         // single giant glossy bubble growing from the tapped icon, so only its curved rim shows.
         FolderZoomLayer(
             visible = viewModel.openFolder != null,
-            originFraction = viewModel.folderOpenOrigin,
+            originSlotIndex = viewModel.folderOriginSlotIndex,
+            isEditMode = viewModel.isEditMode,
         ) {
             lastFolder?.let { folder ->
                 // Same fade used for the home grid underneath its own edit-mode overview: without
@@ -460,6 +463,13 @@ private fun VitaLauncherRoot(
         }
 
         // Layer 4: status bar, fixed on top, always present, never scaled or animated.
-        VitaStatusBar()
+        VitaStatusBar(
+            recentApps = viewModel.recentApps,
+            onHomeClick = {
+                SoundManager.playItemTap()
+                viewModel.resetToHome()
+            },
+            onRecentAppClick = { app -> viewModel.launchApp(app) },
+        )
     }
 }

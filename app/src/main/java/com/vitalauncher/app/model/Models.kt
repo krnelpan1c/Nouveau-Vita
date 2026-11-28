@@ -82,3 +82,19 @@ enum class NavDirection { UP, DOWN, LEFT, RIGHT }
 /** What's drawn behind the home icons: one of [VitaColorThemes][com.vitalauncher.app.ui.theme.VitaColorThemes],
  * or the device's own system wallpaper (static image or live) drawn behind the window itself. */
 enum class BackgroundMode { GRADIENT, SYSTEM_WALLPAPER }
+
+/**
+ * An in-flight edit-mode drop or cancel animation: [item] glides from [visualStart] to [target]
+ * while scaling back down from lifted scale to resting 1.0f. Once it lands (or is interrupted by
+ * another input), the ViewModel commits the move/merge (unless [isCancel] is true) and clears this.
+ */
+@Immutable
+data class PendingDrop(
+    val id: Long,
+    val sessionId: Long,
+    val item: GridItem,
+    val source: SlotLocation,
+    val visualStart: SlotLocation,
+    val target: SlotLocation,
+    val isCancel: Boolean,
+)

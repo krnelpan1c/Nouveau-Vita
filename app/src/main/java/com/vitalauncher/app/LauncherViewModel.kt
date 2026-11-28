@@ -3,11 +3,11 @@ package com.vitalauncher.app
 import android.app.Application
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateList
-import androidx.compose.runtime.mutableStateListOf
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.vitalauncher.app.audio.SoundManager
@@ -20,21 +20,33 @@ import com.vitalauncher.app.model.LauncherStateStore
 import com.vitalauncher.app.model.MAX_FOLDER_ITEMS
 import com.vitalauncher.app.model.NavDirection
 import com.vitalauncher.app.model.Page
+import com.vitalauncher.app.model.PendingDrop
 import com.vitalauncher.app.model.ROW_SLOT_COUNTS
 import com.vitalauncher.app.model.SLOTS_PER_PAGE
 import com.vitalauncher.app.model.SlotLocation
+import com.vitalauncher.app.recents.ShizukuRecentsClient
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
+private const val MAX_RECENT_APPS = 6
+private const val DROP_SAFETY_TIMEOUT_MS = 450L
+
 @Stable
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
 
     /** Home screen pages. Always has at least one page. */
     val pages: SnapshotStateList<Page> = mutableStateListOf(Page())
+
+    /** Up to 6 most recently opened apps, ordered most recent (index 0) to oldest. */
+    val recentApps: SnapshotStateList<AppInfo> = mutableStateListOf()
+
+    private var appsByPackage: Map<String, AppInfo> = emptyMap()
 
     var currentPageIndex by mutableStateOf(0)
         private set
@@ -46,9 +58,9 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     var openFolder by mutableStateOf<FolderInfo?>(null)
         private set
 
-    /** Fractional (x, y) position of the bubble that was tapped to open [openFolder], used as the
-     * zoom animation's transform origin so it visibly expands from that spot. */
-    var folderOpenOrigin by mutableStateOf(0.5f to 0.5f)
+    /** Home-grid slot index (0..9) of [openFolder], used by FolderZoomLayer to compute exact pixel
+     * start/end coordinates for both normal Home mode and Edit mode. */
+    var folderOriginSlotIndex by mutableStateOf(4)
         private set
 
     // --- Edit mode state ---
@@ -56,10 +68,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         private set
     var grabbed by mutableStateOf<SlotLocation?>(null)
         private set
+    var grabSessionId by mutableStateOf(0L)
+        private set
+    var pendingDrop by mutableStateOf<PendingDrop?>(null)
+        private set
     var contextMenuFor by mutableStateOf<SlotLocation?>(null)
         private set
     var toast by mutableStateOf<String?>(null)
         private set
+
+    private var dropSeq = 0L
+    private var dropSafetyJob: Job? = null
 
     // --- Background / wallpaper ---
     var wallpaperPickerOpen by mutableStateOf(false)
@@ -111,10 +130,70 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         SoundManager.init(application)
         viewModelScope.launch {
             val apps = AppRepository.loadLaunchableApps(application)
+            indexLoadedApps(apps)
             val restored = LauncherStateStore.load(application, apps)
             if (restored != null) applyRestoredState(restored, apps) else populatePages(apps)
             isLoading = false
+            refreshRecentApps()
             observeStateForPersistence()
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        ShizukuRecentsClient.release()
+    }
+
+    private fun indexLoadedApps(apps: List<AppInfo>) {
+        val byPkg = LinkedHashMap<String, AppInfo>(apps.size)
+        for (app in apps) {
+            if (!app.isShortcut && app.packageName !in byPkg) {
+                byPkg[app.packageName] = app
+            }
+        }
+        appsByPackage = byPkg
+    }
+
+    /** Launches [app], plays the launch sound, and bumps it to the front of [recentApps]. */
+    fun launchApp(app: AppInfo) {
+        SoundManager.notifyAppLaunched()
+        recordRecentApp(app)
+        AppRepository.launch(getApplication(), app)
+    }
+
+    private fun recordRecentApp(app: AppInfo) {
+        recentApps.removeAll { it.key == app.key }
+        recentApps.add(0, app)
+        while (recentApps.size > MAX_RECENT_APPS) {
+            recentApps.removeAt(recentApps.lastIndex)
+        }
+    }
+
+    /**
+     * When Shizuku is running and already authorized by the user (without ever prompting), syncs
+     * [recentApps] with Android's live Recents stack so cleared apps disappear from the status bar.
+     * Silently keeps the launcher-tracked MRU list when Shizuku is unavailable or unauthorized.
+     */
+    fun refreshRecentApps() {
+        if (isLoading) return
+        viewModelScope.launch {
+            val livePackages = ShizukuRecentsClient.queryRecentPackages(getApplication(), maxCount = 24)
+                ?: return@launch
+            val ownPkg = getApplication<Application>().packageName
+            val byPkg = appsByPackage
+            val resolved = livePackages
+                .asSequence()
+                .filter { it != ownPkg }
+                .mapNotNull { byPkg[it] }
+                .distinctBy { it.key }
+                .take(MAX_RECENT_APPS)
+                .toList()
+            if (recentApps.size != resolved.size ||
+                recentApps.indices.any { recentApps[it].key != resolved[it].key }
+            ) {
+                recentApps.clear()
+                recentApps.addAll(resolved)
+            }
         }
     }
 
@@ -166,11 +245,22 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             if (signature == lastSyncSignature) return@launch
             lastSyncSignature = signature
             val apps = AppRepository.loadLaunchableApps(getApplication())
-            val installedKeys = apps.map { it.key }.toSet()
+            indexLoadedApps(apps)
+            val appsByKey = apps.associateBy { it.key }
+            val installedKeys = appsByKey.keys
             // Shortcuts can only be read while we're the default launcher; otherwise keep the
             // ones already placed rather than mistaking "can't read" for "was removed".
             val keepShortcuts = !AppRepository.hasShortcutHostPermission(getApplication())
             fun isGone(app: AppInfo) = app.key !in installedKeys && !(app.isShortcut && keepShortcuts)
+
+            for (idx in recentApps.indices.reversed()) {
+                val existing = recentApps[idx]
+                if (isGone(existing)) {
+                    recentApps.removeAt(idx)
+                } else {
+                    appsByKey[existing.key]?.let { recentApps[idx] = it }
+                }
+            }
 
             for (page in pages) {
                 for (i in page.slots.indices) {
@@ -193,6 +283,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             }
 
             placeNewlyInstalledApps(apps)
+            refreshRecentApps()
         }
     }
 
@@ -247,22 +338,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     // ---------- Navigation ----------
 
     fun showFolder(folder: FolderInfo, originSlotIndex: Int? = null) {
+        finalizePendingDrop()
         openFolder = folder
         focusedSlot = null
-        folderOpenOrigin = originSlotIndex?.let { originFractionFor(it) } ?: (0.5f to 0.5f)
+        folderOriginSlotIndex = originSlotIndex ?: findFolderSlotIndex(folder.id) ?: 4
     }
 
-    private fun originFractionFor(slotIndex: Int): Pair<Float, Float> {
-        val row = rowOf(slotIndex)
-        val count = ROW_SLOT_COUNTS[row]
-        val maxCount = ROW_SLOT_COUNTS.max()
-        val posInRow = slotIndex - rowStart(row)
-        val x = 0.5f + (posInRow - (count - 1) / 2f) * (1f / maxCount)
-        val y = (row + 0.5f) / ROW_SLOT_COUNTS.size
-        return x to y
+    private fun findFolderSlotIndex(folderId: String): Int? {
+        for (page in pages) {
+            val idx = page.slots.indexOfFirst { it is GridItem.FolderEntry && it.folder.id == folderId }
+            if (idx >= 0) return idx
+        }
+        return null
     }
 
     fun closeFolder() {
+        finalizePendingDrop()
+        openFolder?.let { folder ->
+            findFolderSlotIndex(folder.id)?.let { folderOriginSlotIndex = it }
+        }
         openFolder = null
         focusedSlot = null
     }
@@ -270,7 +364,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     /** Resets all transient UI state back to the plain home screen (used on Home-key re-press). */
     fun resetToHome() {
         exitEditMode()
-        openFolder = null
+        closeFolder()
         focusedSlot = null
         showFocusRing = false
         wallpaperPickerOpen = false
@@ -278,8 +372,47 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     // ---------- Edit mode ----------
 
+    /** Commits any in-flight drop animation immediately so rapid inputs are never lost or delayed. */
+    fun finalizePendingDrop(id: Long? = null) {
+        val drop = pendingDrop ?: return
+        if (id != null && drop.id != id) return
+        dropSafetyJob?.cancel()
+        dropSafetyJob = null
+        pendingDrop = null
+        if (!drop.isCancel && drop.source != drop.target) {
+            performMoveOrMerge(drop.source, drop.target)
+        }
+    }
+
+    private fun startPendingDrop(
+        item: GridItem,
+        source: SlotLocation,
+        visualStart: SlotLocation,
+        target: SlotLocation,
+        isCancel: Boolean,
+    ) {
+        val id = ++dropSeq
+        val drop = PendingDrop(
+            id = id,
+            sessionId = grabSessionId,
+            item = item,
+            source = source,
+            visualStart = visualStart,
+            target = target,
+            isCancel = isCancel,
+        )
+        pendingDrop = drop
+        dropSafetyJob?.cancel()
+        dropSafetyJob = viewModelScope.launch {
+            delay(DROP_SAFETY_TIMEOUT_MS)
+            finalizePendingDrop(id)
+        }
+    }
+
     fun enterEditModeAndGrab(location: SlotLocation) {
+        finalizePendingDrop()
         isEditMode = true
+        grabSessionId++
         grabbed = location
         focusedSlot = location
         showFocusRing = true
@@ -289,6 +422,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun enterEditMode() {
+        finalizePendingDrop()
         isEditMode = true
         grabbed = null
         contextMenuFor = null
@@ -297,6 +431,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun exitEditMode() {
+        finalizePendingDrop()
         if (isEditMode) SoundManager.playExitEditMode()
         isEditMode = false
         grabbed = null
@@ -307,6 +442,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * inside edit mode it instead opens the context menu for whatever the cursor is currently
      * highlighting, the gamepad equivalent of tapping a bubble's "..." badge. */
     fun onYButtonPressed() {
+        finalizePendingDrop()
         if (!isEditMode) {
             enterEditMode()
             return
@@ -323,26 +459,41 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         onSlotTapped(location)
     }
 
-    /** Handles a tap on a slot while in edit mode: grabs an empty selection, or drops/merges a held one. */
+    /** Handles a tap on a slot while in edit mode: lifts an item, or glides/drops a held one. */
     fun onSlotTapped(location: SlotLocation) {
+        finalizePendingDrop()
         val current = grabbed
         if (current == null) {
             if (slotAt(location) != null) {
+                grabSessionId++
                 grabbed = location
+                // Keep focusedSlot synced (without turning on the cyan D-pad ring) so switching to
+                // D-pad mid-grab smoothly continues moving from this lifted slot.
+                focusedSlot = location
             }
             return
         }
-        if (current == location) {
+        val item = slotAt(current)
+        if (item == null) {
             grabbed = null
             return
         }
-        performMoveOrMerge(current, location)
+        val visualStart = if (showFocusRing && focusedSlot != null) focusedSlot!! else current
         grabbed = null
+        startPendingDrop(
+            item = item,
+            source = current,
+            visualStart = visualStart,
+            target = location,
+            isCancel = (current == location),
+        )
     }
 
     /** Starts a touch press-and-hold drag on [location] (a no-op if it's empty). */
     fun grabForDrag(location: SlotLocation) {
+        finalizePendingDrop()
         if (slotAt(location) == null) return
+        grabSessionId++
         grabbed = location
         focusedSlot = location
         showFocusRing = true
@@ -364,6 +515,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * to the home overview still grabbed (see [pullFromFolderKeepGrabbed]) rather than finalizing
      * a drop, so it doesn't just vanish if this is the only signal the gesture ever sends. */
     fun endDragWithEscape() {
+        finalizePendingDrop()
         if (!pullFromFolderKeepGrabbed()) {
             grabbed = null
             focusedSlot = null
@@ -376,15 +528,35 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * back out of an open folder (to the home overview, staying in edit mode if it was already
      * active), and only then actually exit edit mode. */
     fun cancelGrabOrExit() {
+        finalizePendingDrop()
+        val current = grabbed
         when {
             contextMenuFor != null -> contextMenuFor = null
-            grabbed != null -> grabbed = null
+            current != null -> {
+                val item = slotAt(current)
+                val visualStart = if (showFocusRing && focusedSlot != null) focusedSlot!! else current
+                grabbed = null
+                val targetVisible = when (current) {
+                    is SlotLocation.Home -> openFolder == null && current.pageIndex == currentPageIndex
+                    is SlotLocation.InFolder -> openFolder?.id == current.folderId
+                }
+                if (item != null && targetVisible) {
+                    startPendingDrop(
+                        item = item,
+                        source = current,
+                        visualStart = visualStart,
+                        target = current,
+                        isCancel = true,
+                    )
+                }
+            }
             openFolder != null -> closeFolder()
             else -> exitEditMode()
         }
     }
 
     fun openContextMenu(location: SlotLocation) {
+        finalizePendingDrop()
         contextMenuFor = location
     }
 
@@ -395,6 +567,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     /** Wraps the tapped app in a brand-new folder, in place, immediately — no second tap needed.
      * More apps can be dropped onto the resulting folder afterwards the usual way. */
     fun onCreateFolderRequested(location: SlotLocation) {
+        finalizePendingDrop()
         contextMenuFor = null
         val app = (slotAt(location) as? GridItem.Entry)?.app ?: return
         val folder = FolderInfo().apply { items[0] = app }
@@ -403,6 +576,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun onInformationRequested(location: SlotLocation) {
+        finalizePendingDrop()
         contextMenuFor = null
         val item = slotAt(location)
         val app = (item as? GridItem.Entry)?.app ?: return
@@ -432,7 +606,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * hiding it then would make the held icon look like it vanished, with no visual trace that
      * it's still picked up. */
     fun onTouchInteraction() {
-        if (grabbed == null && showFocusRing) showFocusRing = false
+        if (grabbed == null && pendingDrop == null && showFocusRing) showFocusRing = false
     }
 
     fun clearPendingPageScroll(target: Int? = null) {
@@ -468,6 +642,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * picking an item up is often to place it into a *specific* blank slot for a custom layout,
      * so the cursor (and the item riding it) needs to be able to land on every cell freely. */
     fun moveFocus(direction: NavDirection) {
+        finalizePendingDrop()
         showFocusRing = true
         val current = focusedSlot ?: run {
             focusedSlot = defaultFocusSlot()
@@ -623,6 +798,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
 
         pages[targetPage].slots[targetSlot] = GridItem.Entry(app)
+        grabSessionId++
         grabbed = SlotLocation.Home(targetPage, targetSlot)
         focusedSlot = grabbed
         showFocusRing = true
@@ -644,6 +820,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
     /** Activates whatever the D-pad/stick cursor is currently sitting on (a face-button press). */
     fun confirmFocused() {
+        finalizePendingDrop()
         val location = focusedSlot ?: return
         if (isEditMode) {
             // Mirrors the touch behavior: with nothing currently grabbed, confirming on a folder
@@ -658,10 +835,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
             return
         }
         when (val item = slotAt(location)) {
-            is GridItem.Entry -> {
-                SoundManager.notifyAppLaunched()
-                AppRepository.launch(getApplication(), item.app)
-            }
+            is GridItem.Entry -> launchApp(item.app)
             is GridItem.FolderEntry -> showFolder(item.folder, location.slotIndexInGrid)
             null -> {}
         }
@@ -827,6 +1001,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     /** Removes the given page if it's empty (and it isn't the last page). Pages with any apps or
      * folders on them are left alone — clear it out first. */
     fun removePage(pageIndex: Int) {
+        finalizePendingDrop()
         if (pages.size <= 1) {
             toast = "Can't remove the only page"
             return
@@ -845,6 +1020,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
      * held item off the top/bottom edge of the current page carries it onto the adjacent page's
      * first free slot instead, then hops the view there so the result is visible immediately. */
     fun movePageAcrossViaDrag(pageDelta: Int) {
+        finalizePendingDrop()
         val source = grabbed as? SlotLocation.Home ?: run {
             grabbed = null
             return

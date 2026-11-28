@@ -28,7 +28,6 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -39,7 +38,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.vitalauncher.app.LauncherViewModel
 import com.vitalauncher.app.audio.SoundManager
-import com.vitalauncher.app.model.AppRepository
 import com.vitalauncher.app.model.FolderInfo
 import com.vitalauncher.app.model.SlotLocation
 import com.vitalauncher.app.ui.components.AppBubble
@@ -49,8 +47,6 @@ import com.vitalauncher.app.ui.components.STATUS_BAR_HEIGHT
 
 @Composable
 fun FolderScreen(viewModel: LauncherViewModel, folder: FolderInfo, modifier: Modifier = Modifier) {
-    val context = LocalContext.current
-
     BackHandler(enabled = true) {
         if (viewModel.isEditMode) viewModel.cancelGrabOrExit() else viewModel.closeFolder()
     }
@@ -129,10 +125,7 @@ fun FolderScreen(viewModel: LauncherViewModel, folder: FolderInfo, modifier: Mod
                     AppBubble(
                         app = app,
                         size = 92.dp,
-                        onClick = {
-                            SoundManager.notifyAppLaunched()
-                            AppRepository.launch(context, app)
-                        },
+                        onClick = { viewModel.launchApp(app) },
                         onLongClick = {
                             viewModel.enterEditModeAndGrab(SlotLocation.InFolder(folder.id, slotIndex))
                         },

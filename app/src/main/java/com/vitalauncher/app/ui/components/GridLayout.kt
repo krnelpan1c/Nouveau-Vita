@@ -1,8 +1,11 @@
 package com.vitalauncher.app.ui.components
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -11,8 +14,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -31,21 +36,56 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.vitalauncher.app.model.ROW_SLOT_COUNTS
 import com.vitalauncher.app.ui.theme.VitaColors
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 
 /** Horizontal pitch scale for [PageGrid] instances showing a folder's contents — tighter than the
  * home screen's so icons don't spread across the whole width of the giant zoomed-in bubble. */
 const val FOLDER_PITCH_SCALE = 0.85f
 
+private const val LIFTED_BUBBLE_SCALE = 1.18f
+
 private val CURSOR_SPRING = spring<Float>(
     dampingRatio = Spring.DampingRatioLowBouncy,
     stiffness = Spring.StiffnessMediumLow,
+)
+
+private val LIFT_SCALE_SPRING = spring<Float>(
+    dampingRatio = Spring.DampingRatioMediumBouncy,
+    stiffness = Spring.StiffnessMedium,
+)
+
+private val DROP_MOVE_SPEC = tween<Float>(
+    durationMillis = 210,
+    easing = FastOutSlowInEasing,
+)
+
+private val DROP_SCALE_SPEC = tween<Float>(
+    durationMillis = 150,
+    easing = FastOutSlowInEasing,
+)
+
+/**
+ * Snapshot describing a bubble currently lifted above or dropping onto a slot on this [PageGrid].
+ * Sharing [sessionKey] across the lifted and dropping phases preserves the floating bubble's exact
+ * in-flight coordinates and scale seamlessly with zero visual jump.
+ */
+data class LiftedBubbleState(
+    val sessionKey: Long,
+    val targetSlotIndex: Int,
+    val isDropping: Boolean,
+    val dropId: Long?,
+    val content: @Composable () -> Unit,
 )
 
 private class SlotBounds(
     var left: Float = 0f,
     var top: Float = 0f,
     var width: Float = 0f,
+    var height: Float = 0f,
     var valid: Boolean = false,
 )
 
@@ -56,16 +96,18 @@ private class SlotBounds(
  * icons to fill the full width — so the 3-icon rows sit at the same spacing as the 4-icon row,
  * just centered with fewer of them.
  *
- * Focus state is read lazily inside a sibling [PageFocusOverlay] via [focusedSlotIndexProvider] so
- * moving the D-pad cursor (including across page boundaries) never recomposes or re-lays out the
- * grid's slots or app bubbles.
+ * Focus and lifted-bubble state are read lazily inside sibling overlays via providers so moving
+ * the D-pad cursor (including across page boundaries) never recomposes or re-lays out the grid's
+ * slots or app bubbles.
  */
 @Composable
 fun PageGrid(
     modifier: Modifier = Modifier,
     focusedSlotIndexProvider: () -> Int? = { null },
     focusRingDiameter: Dp = 92.dp,
-    liftedContent: (@Composable () -> Unit)? = null,
+    liftedBubbleStateProvider: () -> LiftedBubbleState? = { null },
+    liftedBubbleSize: Dp = 64.dp,
+    onDropAnimationFinished: ((dropId: Long) -> Unit)? = null,
     dragEnabled: Boolean = false,
     /** Scales the horizontal pitch between icon centers — folders use a tighter value than the
      * home screen so their contents don't spread across the whole giant zoomed-in bubble. */
@@ -93,7 +135,7 @@ fun PageGrid(
         for (idx in slotBounds.indices) {
             val b = slotBounds[idx]
             if (!b.valid) continue
-            val center = Offset(b.left + b.width / 2f, b.top + b.width / 2f)
+            val center = Offset(b.left + b.width / 2f, b.top + b.height / 2f)
             val d = (localPosition - center).getDistance()
             if (d < bestDist) {
                 bestDist = d
@@ -200,11 +242,13 @@ fun PageGrid(
                         val xf = x.toFloat()
                         val yf = y.toFloat()
                         val wf = placeable.width.toFloat()
+                        val hf = placeable.height.toFloat()
                         val b = slotBounds[slotIdx]
-                        if (!b.valid || b.left != xf || b.top != yf || b.width != wf) {
+                        if (!b.valid || b.left != xf || b.top != yf || b.width != wf || b.height != hf) {
                             b.left = xf
                             b.top = yf
                             b.width = wf
+                            b.height = hf
                             b.valid = true
                             anyChanged = true
                         }
@@ -220,7 +264,14 @@ fun PageGrid(
             slotBounds = slotBounds,
             geometryVersionProvider = { geometryVersion },
             focusRingDiameter = focusRingDiameter,
-            liftedContent = liftedContent,
+        )
+
+        PageLiftedBubbleOverlay(
+            liftedBubbleStateProvider = liftedBubbleStateProvider,
+            slotBounds = slotBounds,
+            geometryVersionProvider = { geometryVersion },
+            bubbleSize = liftedBubbleSize,
+            onDropAnimationFinished = onDropAnimationFinished,
         )
     }
 }
@@ -231,7 +282,6 @@ private fun PageFocusOverlay(
     slotBounds: Array<SlotBounds>,
     geometryVersionProvider: () -> Int,
     focusRingDiameter: Dp,
-    liftedContent: (@Composable () -> Unit)?,
 ) {
     val focusedSlotIndex by remember(focusedSlotIndexProvider) {
         derivedStateOf { focusedSlotIndexProvider() }
@@ -252,7 +302,6 @@ private fun PageFocusOverlay(
         left = ringLeft,
         top = ringTop,
         diameter = focusRingDiameter,
-        liftedContent = liftedContent,
     )
 }
 
@@ -261,7 +310,6 @@ private fun FocusCursor(
     left: Float,
     top: Float,
     diameter: Dp,
-    liftedContent: (@Composable () -> Unit)?,
 ) {
     val animatedLeft = animateFloatAsState(left, CURSOR_SPRING, label = "cursorX")
     val animatedTop = animateFloatAsState(top, CURSOR_SPRING, label = "cursorY")
@@ -286,10 +334,108 @@ private fun FocusCursor(
                 .clip(CircleShape)
                 .border(3.dp, VitaColors.GrabbedRing, CircleShape),
         )
-        if (liftedContent != null) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                liftedContent()
+    }
+}
+
+@Composable
+private fun PageLiftedBubbleOverlay(
+    liftedBubbleStateProvider: () -> LiftedBubbleState?,
+    slotBounds: Array<SlotBounds>,
+    geometryVersionProvider: () -> Int,
+    bubbleSize: Dp,
+    onDropAnimationFinished: ((dropId: Long) -> Unit)?,
+) {
+    val state by remember(liftedBubbleStateProvider) {
+        derivedStateOf { liftedBubbleStateProvider() }
+    }
+    val active = state ?: return
+    if (active.targetSlotIndex !in slotBounds.indices) return
+
+    val version = geometryVersionProvider()
+    val b = slotBounds[active.targetSlotIndex]
+    if (!b.valid || version < 0) return
+
+    val targetCenterX = b.left + b.width / 2f
+    val targetCenterY = b.top + b.height / 2f
+
+    key(active.sessionKey) {
+        LiftedBubbleRenderer(
+            targetCenterX = targetCenterX,
+            targetCenterY = targetCenterY,
+            isDropping = active.isDropping,
+            dropId = active.dropId,
+            bubbleSize = bubbleSize,
+            onDropAnimationFinished = onDropAnimationFinished,
+            content = active.content,
+        )
+    }
+}
+
+@Composable
+private fun LiftedBubbleRenderer(
+    targetCenterX: Float,
+    targetCenterY: Float,
+    isDropping: Boolean,
+    dropId: Long?,
+    bubbleSize: Dp,
+    onDropAnimationFinished: ((dropId: Long) -> Unit)?,
+    content: @Composable () -> Unit,
+) {
+    val density = LocalDensity.current
+    val bubbleSizePx = with(density) { bubbleSize.toPx() }
+
+    val animX = remember { Animatable(targetCenterX) }
+    val animY = remember { Animatable(targetCenterY) }
+    // If mounted straight into a drop (e.g., cross-page touch tap), start at lifted scale so it
+    // visually settles down onto the destination slot; otherwise lift smoothly from resting 1.0f.
+    val animScale = remember { Animatable(if (isDropping) LIFTED_BUBBLE_SCALE else 1f) }
+
+    LaunchedEffect(isDropping) {
+        if (!isDropping) {
+            animScale.animateTo(LIFTED_BUBBLE_SCALE, LIFT_SCALE_SPRING)
+        }
+    }
+
+    LaunchedEffect(targetCenterX, targetCenterY, isDropping) {
+        if (!isDropping) {
+            coroutineScope {
+                launch { animX.animateTo(targetCenterX, CURSOR_SPRING) }
+                launch { animY.animateTo(targetCenterY, CURSOR_SPRING) }
             }
         }
+    }
+
+    LaunchedEffect(dropId, isDropping) {
+        if (!isDropping || dropId == null) return@LaunchedEffect
+        val dist = hypot(targetCenterX - animX.value, targetCenterY - animY.value)
+        coroutineScope {
+            if (dist > 4f) {
+                launch { animX.animateTo(targetCenterX, DROP_MOVE_SPEC) }
+                launch { animY.animateTo(targetCenterY, DROP_MOVE_SPEC) }
+                launch {
+                    delay(60)
+                    animScale.animateTo(1f, DROP_SCALE_SPEC)
+                }
+            } else {
+                launch { animX.snapTo(targetCenterX) }
+                launch { animY.snapTo(targetCenterY) }
+                launch { animScale.animateTo(1f, DROP_SCALE_SPEC) }
+            }
+        }
+        onDropAnimationFinished?.invoke(dropId)
+    }
+
+    Box(
+        modifier = Modifier
+            .graphicsLayer {
+                translationX = animX.value - bubbleSizePx / 2f
+                translationY = animY.value - bubbleSizePx / 2f
+                scaleX = animScale.value
+                scaleY = animScale.value
+            }
+            .size(bubbleSize),
+        contentAlignment = Alignment.Center,
+    ) {
+        content()
     }
 }
